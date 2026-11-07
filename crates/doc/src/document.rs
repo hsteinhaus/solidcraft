@@ -1746,6 +1746,11 @@ pub enum FeatureKind {
         /// How the rails reshape the sections between.
         #[serde(default, skip_serializing_if = "RailFit::is_scale")]
         rail_fit: RailFit,
+        /// Section numbers where a loft that runs all the way round, from the last section back
+        /// into the first, is cut into faces; empty: an open loft from the first section to the
+        /// last.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        seams: Vec<usize>,
     },
     /// The faces at `faces` copied out at a signed `distance` along their normals as a new
     /// surface body (0 copies them); `chain` takes each pick's whole smooth chain of faces;

@@ -912,7 +912,7 @@ fn numbered(chains: &[Vec<Seg2>]) -> Vec<Vec<Numbered>> {
         .collect()
 }
 
-fn check_chains(chains: &[Vec<Seg2>], what: &str) -> Result<()> {
+pub(crate) fn check_chains(chains: &[Vec<Seg2>], what: &str) -> Result<()> {
     if chains.is_empty() || chains.len() > MAX_CHAINS {
         return Err(invalid(format!("pick the curves or profiles to {what}")));
     }
@@ -1205,7 +1205,7 @@ fn closed_sections(sections: &[(Plane, Vec<Seg2>)]) -> Result<Vec<crate::loft_ra
 
 /// Open sections split to the same number of segments (the longest in half until the counts
 /// match), each turned to run the way the one before it does.
-fn open_sections(sections: &[(Plane, Vec<Seg2>)]) -> Result<Vec<crate::loft_rails::Section>> {
+pub(crate) fn open_sections(sections: &[(Plane, Vec<Seg2>)]) -> Result<Vec<crate::loft_rails::Section>> {
     let n = sections.iter().map(|(_, c)| c.len()).max().unwrap_or(0);
     let mut out = Vec::with_capacity(sections.len());
     let mut prev: Option<(Vec3, Vec3)> = None;
@@ -1315,7 +1315,7 @@ fn joined_curve(run: &[&solidcraft_geom::bspline::CurveN<4>]) -> Option<solidcra
 /// correspond; each joined curve stands for the profile segments of its pieces. The sections
 /// come back as they are where they do not all have the same number of curves or a run cannot
 /// be joined.
-fn smooth_runs_joined(sections: Vec<crate::loft_rails::Section>) -> Vec<crate::loft_rails::Section> {
+pub(crate) fn smooth_runs_joined(sections: Vec<crate::loft_rails::Section>) -> Vec<crate::loft_rails::Section> {
     let n = sections.first().map_or(0, |s| s.curves.len());
     if n < 2 || sections.iter().any(|s| s.curves.len() != n || s.numbers.len() != n) {
         return sections;
