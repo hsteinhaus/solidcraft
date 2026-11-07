@@ -912,7 +912,7 @@ fn numbered(chains: &[Vec<Seg2>]) -> Vec<Vec<Numbered>> {
         .collect()
 }
 
-fn check_chains(chains: &[Vec<Seg2>], what: &str) -> Result<()> {
+pub(crate) fn check_chains(chains: &[Vec<Seg2>], what: &str) -> Result<()> {
     if chains.is_empty() || chains.len() > MAX_CHAINS {
         return Err(invalid(format!("pick the curves or profiles to {what}")));
     }
@@ -1174,6 +1174,9 @@ pub fn loft_sheet_with_rails(sections: &[(Plane, Vec<Seg2>)], rails: &[Vec<Vec3>
         check_chains(std::slice::from_ref(chain), "loft")?;
     }
     let matched = if all_closed { closed_sections(sections)? } else { open_sections(sections)? };
+    // Pieces of one smooth curve (a spline's spans) loft as one wall, skinned in one go: a column
+    // per span would make a face per span and seams SMLib then has to stitch.
+    let matched = if all_closed || !rails.is_empty() { matched } else { smooth_runs_joined(matched) };
     let lofted = crate::loft_rails::railed(&matched, all_closed, rails, fit)?;
     let count = matched.first().map_or(0, |s| s.curves.len());
     let pieces = (0..count)
@@ -1202,7 +1205,7 @@ fn closed_sections(sections: &[(Plane, Vec<Seg2>)]) -> Result<Vec<crate::loft_ra
 
 /// Open sections split to the same number of segments (the longest in half until the counts
 /// match), each turned to run the way the one before it does.
-fn open_sections(sections: &[(Plane, Vec<Seg2>)]) -> Result<Vec<crate::loft_rails::Section>> {
+pub(crate) fn open_sections(sections: &[(Plane, Vec<Seg2>)]) -> Result<Vec<crate::loft_rails::Section>> {
     let n = sections.iter().map(|(_, c)| c.len()).max().unwrap_or(0);
     let mut out = Vec::with_capacity(sections.len());
     let mut prev: Option<(Vec3, Vec3)> = None;
@@ -1228,6 +1231,125 @@ fn open_sections(sections: &[(Plane, Vec<Seg2>)]) -> Result<Vec<crate::loft_rail
         out.push(crate::loft_rails::Section::of(plane, &pieces, segs.iter().map(|(_, k)| vec![*k]).collect())?);
     }
     Ok(out)
+}
+
+/// Whether the curve `b` carries on from `a` as one smooth curve: both polynomial (unit weights)
+/// of one degree, at least quadratic and clamped, `b` starting where `a` ends and leaving the way
+/// `a` arrives (G1). Lines never join, so collinear pieces keep a wall each, and arcs and conics
+/// (rational) neither.
+fn joins_smoothly(a: &solidcraft_geom::bspline::CurveN<4>, b: &solidcraft_geom::bspline::CurveN<4>) -> bool {
+    let p = a.degree;
+    let polynomial = |c: &solidcraft_geom::bspline::CurveN<4>| c.ctrl.iter().all(|h| (h[3] - 1.0).abs() <= 1e-12);
+    let clamped = |c: &solidcraft_geom::bspline::CurveN<4>| {
+        let n = c.ctrl.len();
+        c.knots.len() == n + p + 1
+            && c.knots.get(..=p).is_some_and(|k| k.iter().all(|t| Some(t) == k.first()))
+            && c.knots.get(n..).is_some_and(|k| k.iter().all(|t| Some(t) == k.first()))
+    };
+    if p < 2 || b.degree != p || !polynomial(a) || !polynomial(b) || !clamped(a) || !clamped(b) {
+        return false;
+    }
+    let v = |h: &[f64; 4]| Vec3::new(h[0], h[1], h[2]);
+    let (Some(a1), Some(a0), Some(b0), Some(b1)) = (a.ctrl.last(), a.ctrl.iter().rev().nth(1), b.ctrl.first(), b.ctrl.get(1)) else {
+        return false;
+    };
+    let (end, start) = (v(a1), v(b0));
+    let scale = 1.0 + end.len().max(start.len());
+    let (Some(out), Some(on)) = ((end - v(a0)).normalized(), (v(b1) - start).normalized()) else {
+        return false;
+    };
+    end.dist(start) <= 1e-9 * scale && out.dot(on) >= 1.0 - 1e-10
+}
+
+/// The speeds of a clamped polynomial curve at its two ends, |C'(t0)| and |C'(t1)| in its own
+/// parameter.
+fn end_speeds(c: &solidcraft_geom::bspline::CurveN<4>) -> Option<(f64, f64)> {
+    let (p, n) = (c.degree, c.ctrl.len());
+    let v = |h: &[f64; 4]| Vec3::new(h[0], h[1], h[2]);
+    let (p0, p1) = (v(c.ctrl.first()?), v(c.ctrl.get(1)?));
+    let (q1, q0) = (v(c.ctrl.last()?), v(c.ctrl.get(n.checked_sub(2)?)?));
+    let start = (*c.knots.get(p + 1)? - *c.knots.get(1)?).max(1e-300);
+    let end = (*c.knots.get(n + p - 1)? - *c.knots.get(n - 1)?).max(1e-300);
+    let speeds = (p as f64 * p1.dist(p0) / start, p as f64 * q1.dist(q0) / end);
+    (speeds.0 > 0.0 && speeds.1 > 0.0 && speeds.0.is_finite() && speeds.1.is_finite()).then_some(speeds)
+}
+
+/// The clamped curves of `run` (each joining the next as [`joins_smoothly`] says) as one curve,
+/// exactly, with a knot of multiplicity degree at each joint. Each piece's parameter range is
+/// sized so that the joined curve runs on at the same speed across every joint (C1 in its
+/// parameter, as the curve the pieces were cut from): a speed jump there would put a kink into
+/// every curve on a surface made from it in the surface's parameters. `None` when a piece is not
+/// what `joins_smoothly` takes.
+fn joined_curve(run: &[&solidcraft_geom::bspline::CurveN<4>]) -> Option<solidcraft_geom::bspline::CurveN<4>> {
+    let first = run.first()?;
+    let p = first.degree;
+    let mut knots = vec![0.0; p + 1];
+    let mut ctrl = vec![*first.ctrl.first()?];
+    let (mut at, mut width, mut arrive) = (0.0_f64, 1.0_f64, None::<f64>);
+    for (k, c) in run.iter().enumerate() {
+        let n = c.ctrl.len();
+        let (t0, t1) = (*c.knots.get(p)?, *c.knots.get(n)?);
+        if c.degree != p || !(t1 > t0) {
+            return None;
+        }
+        let (leave, end) = end_speeds(c)?;
+        // The speed it arrives at, in the joined parameter, equals the speed this piece leaves at.
+        if let Some(arrive) = arrive {
+            width = leave * (t1 - t0) / arrive;
+        }
+        if !(width.is_finite() && width > 0.0) {
+            return None;
+        }
+        knots.extend(c.knots.get(p + 1..n)?.iter().map(|t| at + width * (t - t0) / (t1 - t0)));
+        at += width;
+        let mult = if k + 1 < run.len() { p } else { p + 1 };
+        knots.extend(std::iter::repeat_n(at, mult));
+        ctrl.extend(c.ctrl.get(1..)?.iter().copied());
+        arrive = Some(end * (t1 - t0) / width);
+    }
+    (knots.len() == ctrl.len() + p + 1).then_some(solidcraft_geom::bspline::CurveN { degree: p, knots, ctrl })
+}
+
+/// Matched open sections with their pieces joined into one curve across every joint that is
+/// smooth in all of them ([`joins_smoothly`]), so that the k-th curves of the sections still
+/// correspond; each joined curve stands for the profile segments of its pieces. The sections
+/// come back as they are where they do not all have the same number of curves or a run cannot
+/// be joined.
+pub(crate) fn smooth_runs_joined(sections: Vec<crate::loft_rails::Section>) -> Vec<crate::loft_rails::Section> {
+    let n = sections.first().map_or(0, |s| s.curves.len());
+    if n < 2 || sections.iter().any(|s| s.curves.len() != n || s.numbers.len() != n) {
+        return sections;
+    }
+    let smooth: Vec<bool> =
+        (0..n - 1).map(|j| sections.iter().all(|s| s.curves.get(j).zip(s.curves.get(j + 1)).is_some_and(|(a, b)| joins_smoothly(a, b)))).collect();
+    if !smooth.iter().any(|s| *s) {
+        return sections;
+    }
+    // Runs as [start, end) piece ranges.
+    let mut runs = Vec::new();
+    let mut start = 0;
+    for (j, s) in smooth.iter().enumerate() {
+        if !s {
+            runs.push((start, j + 1));
+            start = j + 1;
+        }
+    }
+    runs.push((start, n));
+    let joined: Option<Vec<crate::loft_rails::Section>> = sections
+        .iter()
+        .map(|s| {
+            let mut curves = Vec::with_capacity(runs.len());
+            let mut numbers = Vec::with_capacity(runs.len());
+            for &(a, b) in &runs {
+                let run: Vec<&solidcraft_geom::bspline::CurveN<4>> = s.curves.get(a..b)?.iter().collect();
+                curves.push(if run.len() == 1 { (*run.first()?).clone() } else { joined_curve(&run)? });
+                let set: BTreeSet<usize> = s.numbers.get(a..b)?.iter().flatten().copied().collect();
+                numbers.push(set.into_iter().collect());
+            }
+            Some(crate::loft_rails::Section { plane: s.plane, curves, numbers })
+        })
+        .collect();
+    joined.unwrap_or(sections)
 }
 
 /// SMLib's side of this module.
@@ -1781,6 +1903,49 @@ mod tests {
         assert!(tube.is_surface());
         let want = 2.0 * PI * 2.0 * 10.0;
         assert!(rel(area(&tube), want) < 2e-3, "{} vs {want}", area(&tube)); // (measured on meshes)
+    }
+
+    /// Sections whose pieces run on smoothly (a spline's spans) loft as one wall, its area the
+    /// pieces' length times the height; pieces meeting at a corner keep a wall each.
+    #[test]
+    fn loft_sheet_joins_smooth_pieces() {
+        let at = |z: f64| Plane::XY.offset(z);
+        let v = Vec2::new;
+        let a = Seg2::Cubic { p0: v(0.0, 0.0), p1: v(3.0, 0.0), p2: v(6.0, 3.0), p3: v(9.0, 3.0) };
+        let smooth = vec![a, Seg2::Cubic { p0: v(9.0, 3.0), p1: v(12.0, 3.0), p2: v(15.0, 0.0), p3: v(18.0, 0.0) }];
+        let length: f64 = smooth.iter().map(|s| s.polyline(1e-5).windows(2).map(|w| w[0].dist(w[1])).sum::<f64>()).sum();
+        let sections: Vec<(Plane, Vec<Seg2>)> = [0.0, 5.0, 10.0].iter().map(|z| (at(*z), smooth.clone())).collect();
+        let wall = loft_sheet(&sections).unwrap();
+        assert_eq!(wall.face_count(), 1);
+        let area = measure(&wall).unwrap().area;
+        assert!(rel(area, length * 10.0) < 1e-3, "{area} vs {}", length * 10.0); // (measured on meshes)
+        let corner = vec![a, Seg2::Cubic { p0: v(9.0, 3.0), p1: v(9.0, 6.0), p2: v(12.0, 9.0), p3: v(15.0, 9.0) }];
+        let sections: Vec<(Plane, Vec<Seg2>)> = [0.0, 5.0, 10.0].iter().map(|z| (at(*z), corner.clone())).collect();
+        assert_eq!(loft_sheet(&sections).unwrap().face_count(), 2);
+    }
+
+    /// A cubic cut in two at 0.3 joins back with its pieces' parameter ranges 0.3 : 0.7: the same
+    /// speed on both sides of the joint, as the curve it was cut from.
+    #[test]
+    fn joined_curve_keeps_the_speed_across_joints() {
+        use solidcraft_geom::bspline::CurveN;
+        let q = [[0.0, 0.0, 0.0], [1.0, 4.0, 0.0], [5.0, 4.0, 1.0], [9.0, 0.0, 2.0]];
+        let lerp = |a: [f64; 3], b: [f64; 3], t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+        let t = 0.3;
+        let (a1, b1, c1) = (lerp(q[0], q[1], t), lerp(q[1], q[2], t), lerp(q[2], q[3], t));
+        let (a2, b2) = (lerp(a1, b1, t), lerp(b1, c1, t));
+        let m = lerp(a2, b2, t);
+        let bez = |p: [[f64; 3]; 4]| CurveN::<4> {
+            degree: 3,
+            knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            ctrl: p.iter().map(|x| [x[0], x[1], x[2], 1.0]).collect(),
+        };
+        let (left, right) = (bez([q[0], a1, a2, m]), bez([m, b2, c1, q[3]]));
+        assert!(joins_smoothly(&left, &right));
+        let j = joined_curve(&[&left, &right]).unwrap();
+        assert_eq!(j.ctrl.len(), 7);
+        let (w1, end) = (j.knots[4], j.knots[j.knots.len() - 1]);
+        assert!(((end - w1) / w1 - 0.7 / 0.3).abs() < 1e-9, "{:?}", j.knots);
     }
 
     #[test]

@@ -396,7 +396,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
             push_sheet(st, f, traced);
             Ok(())
         }
-        FeatureKind::SurfaceLoft { sections, continuity, crown, rails, rail_fit } => {
+        FeatureKind::SurfaceLoft { sections, continuity, crown, rails, rail_fit, seams } => {
             // A loft with edge chains for sections, or one that has to leave its ends a particular
             // way, is built through `loft_blend` from the frames of every section; the plain one
             // (sketch chains only, both ends G0) is the loft of old.
@@ -428,7 +428,9 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                 secs.push((ss.plane, chain));
                 sketches.push(ss);
             }
-            let body = if rails.is_empty() {
+            let body = if !seams.is_empty() {
+                kernel::loft_sheet_closed(&secs, seams)?
+            } else if rails.is_empty() {
                 kernel::loft_sheet(&secs)?
             } else {
                 // The rails run from the end at the first section.

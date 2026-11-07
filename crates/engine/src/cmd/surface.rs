@@ -52,7 +52,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("surface.loft", "Surface Loft", surface_loft)
         .at("SURFACE", "CREATE")
         .icon("surface_loft")
-        .params("sections: [{sketch, curves?: [curve ids], profiles?} | {body, edges: [[x,y,z]]}] (2…50 in order; each one chain: a profile without holes, or curves meeting end to end; all open or all closed; a body edge chain takes the face the chain bounds as the surface the end repeats); continuity?: [g0|g1|g2|g3, g0|g1|g2|g3] (each end, default g0: how much of the surface at the first and last section the loft repeats — the tangent plane, the curvature, or how that curvature changes); crown?: [number, number] (default 0: how full each end leaves, -0.9 flattest to 3 fullest); rails?, rail_fit? (as solid.loft; sketch sections only, both ends g0); name?, body_name? (a surface body: ruled between two sections, smooth through three or more; no caps)"),
+        .params("sections: [{sketch, curves?: [curve ids], profiles?} | {body, edges: [[x,y,z]]}] (2…50 in order; each one chain: a profile without holes, or curves meeting end to end; all open or all closed; a body edge chain takes the face the chain bounds as the surface the end repeats); continuity?: [g0|g1|g2|g3, g0|g1|g2|g3] (each end, default g0: how much of the surface at the first and last section the loft repeats — the tangent plane, the curvature, or how that curvature changes); crown?: [number, number] (default 0: how full each end leaves, -0.9 flattest to 3 fullest); rails?, rail_fit? (as solid.loft; sketch sections only, both ends g0); seams?: [section numbers] (the loft runs all the way round, from the last section back into the first, smooth everywhere, and is cut into faces at these sections; 3 or more open sketch sections, each one smooth curve; not with rails or end continuity); name?, body_name? (a surface body: ruled between two sections, smooth through three or more; no caps)"),
     CommandSpec::new("surface.offset", "Offset Surface", offset)
         .at("SURFACE", "CREATE")
         .icon("surface_offset")
@@ -431,7 +431,20 @@ fn surface_loft(s: &mut Session, p: &Value) -> Result<Value> {
         }
     };
     let (rails, rail_fit) = super::features::guide_rails(s, p, cmd, "loft", None)?;
-    add_feature(s, p, FeatureKind::SurfaceLoft { sections, continuity, crown, rails, rail_fit })
+    let seams: Vec<usize> = match p.get("seams") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(v) => v
+            .as_array()
+            .filter(|a| !a.is_empty() && a.len() <= 50)
+            .and_then(|a| {
+                a.iter().map(|x| x.as_u64().and_then(|n| usize::try_from(n).ok()).filter(|n| *n < sections.len())).collect::<Option<Vec<_>>>()
+            })
+            .ok_or_else(|| bad(cmd, "`seams` must list section numbers (from 0), each less than the section count"))?,
+    };
+    if !seams.is_empty() && (!rails.is_empty() || continuity != [Continuity::G0, Continuity::G0] || sections.iter().any(|s| s.body.is_some())) {
+        return Err(bad(cmd, "a loft with `seams` runs round through sketch sections only, without rails or end continuity"));
+    }
+    add_feature(s, p, FeatureKind::SurfaceLoft { sections, continuity, crown, rails, rail_fit, seams })
 }
 
 fn offset(s: &mut Session, p: &Value) -> Result<Value> {
