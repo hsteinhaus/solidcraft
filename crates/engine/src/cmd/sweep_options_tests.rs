@@ -214,3 +214,24 @@ fn a_path_turns_a_spline_of_several_pieces_round_whole() {
         assert!((got - want).abs() < 0.04, "{:?}", m.bbox);
     }
 }
+
+/// A profile inside an open path (as another CAD sweeps it, both ways from the profile): the
+/// circle at z 0 swept along a line from z -20 to z 20 is the cylinder over the whole line, one
+/// body, not a sweep that starts at the line's end. Both ways takes no twist.
+#[test]
+fn a_profile_inside_the_path_sweeps_both_ways() {
+    let mut s = setup();
+    run(&mut s, "sketch.create", json!({"plane": "XZ", "name": "M"}));
+    run(&mut s, "sketch.line", json!({"points": [[0, 20], [0, -20]], "ids": ["through"]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let p = json!({"sketch": "C", "path_sketch": "M", "path": ["through"], "operation": "new", "body_name": "Both"});
+    run(&mut s, "solid.sweep", p.clone());
+    let m = measure(&s, "Both");
+    assert!((m.volume - PI * 100.0 * 40.0).abs() < 1e-6 * m.volume, "{}", m.volume);
+    assert!((m.bbox.min.z + 20.0).abs() < 1e-9 && (m.bbox.max.z - 20.0).abs() < 1e-9, "{:?}", m.bbox);
+    assert_eq!(s.world_state().unwrap().bodies.len(), 1);
+    let mut twisted = p;
+    twisted["twist"] = json!("90 deg");
+    twisted["body_name"] = json!("Twisted");
+    assert!(s.execute("solid.sweep", &twisted).is_err());
+}
