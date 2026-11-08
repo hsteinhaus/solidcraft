@@ -5857,6 +5857,21 @@ fn feature_tools_with_constructor(
             if let Some(path) = points {
                 return regions.iter().map(|r| Ok(tool(r, kernel::sweep_point_path_with(&ss.plane, r, &path, &ctl)?))).collect();
             }
+            // A profile inside an open path sweeps both ways, to each end, as one body.
+            if let Some((ahead, behind)) = path_segments_both_ways(ps, path, start, &ss.plane)? {
+                if ctl.twist != 0.0 || ctl.scale != 1.0 || !ctl.rails.is_empty() {
+                    return Err(DocError::Invalid("a profile inside the path sweeps both ways without twist, end scale or rails".into()));
+                }
+                return regions
+                    .iter()
+                    .map(|r| {
+                        let (a, b) = (kernel::sweep_with(&ss.plane, r, &ahead, &ctl)?, kernel::sweep_with(&ss.plane, r, &behind, &ctl)?);
+                        let one =
+                            kernel::boolean(&a, &b, BoolOp::Union)?.ok_or_else(|| DocError::Invalid("the sweep's two sides make nothing".into()))?;
+                        Ok(tool(r, one))
+                    })
+                    .collect();
+            }
             regions.iter().map(|r| Ok(tool(r, kernel::sweep_with(&ss.plane, r, &segs, &ctl)?))).collect()
         }
         FeatureKind::Pipe { path_sketch, path, diameter, wall, .. } => {
@@ -6147,6 +6162,16 @@ pub(crate) fn path_segments_at(ps: &SolvedSketch, ids: &[String], start: Vec3, p
     if let Some(path) = path_points(ps, ids, start)? {
         return Ok(path.points().windows(2).map(|w| kernel::PathSeg::Line { a: w[0], b: w[1] }).collect());
     }
+    let mut segs = path_chain(ps, ids, start)?;
+    if let Some(profile) = profile {
+        segs = from_profile_on_closed_path(segs, &ps.plane, profile, start);
+    }
+    Ok(segs.iter().map(|s| kernel::PathSeg::of_sketch(&ps.plane, s)).collect())
+}
+
+/// The path curves `ids` of a planar sketch as one chain in its plane, each curve as its exact
+/// pieces in the direction of travel, begun from the end nearest `start`.
+fn path_chain(ps: &SolvedSketch, ids: &[String], start: Vec3) -> Result<Vec<solidcore_record::Seg2>> {
     // Each curve as its exact pieces (Béziers, conics) where it has them, in its own direction
     // of travel. A curve is turned round whole: its pieces stay one run.
     let mut curves: Vec<Vec<solidcore_record::Seg2>> = Vec::with_capacity(ids.len());
@@ -6187,10 +6212,59 @@ pub(crate) fn path_segments_at(ps: &SolvedSketch, ids: &[String], start: Vec3, p
     if segs.windows(2).any(|pair| pair[1].start().dist(pair[0].end()) > JOINT) {
         return Err(DocError::Invalid("the path curves are not connected end to end".into()));
     }
-    if let Some(profile) = profile {
-        segs = from_profile_on_closed_path(segs, &ps.plane, profile, start);
+    Ok(segs)
+}
+
+/// An open path (`ids` in `ps`) that `profile`'s plane crosses inside it, nearest `start` (the
+/// profile's middle), as its two sides from there: ahead to its end and behind to its start, each
+/// running away from the profile. `None` when the path is closed, or meets the profile at an end
+/// or not at all: it is swept as one.
+fn path_segments_both_ways(
+    ps: &SolvedSketch,
+    ids: &[String],
+    start: Vec3,
+    profile: &Plane,
+) -> Result<Option<(Vec<kernel::PathSeg>, Vec<kernel::PathSeg>)>> {
+    if path_points(ps, ids, start)?.is_some() {
+        return Ok(None);
     }
-    Ok(segs.iter().map(|s| kernel::PathSeg::of_sketch(&ps.plane, s)).collect())
+    let local = path_chain(ps, ids, start)?;
+    let path = &ps.plane;
+    let (Some(first), Some(last)) = (local.first(), local.last()) else { return Ok(None) };
+    let size: f64 = local.iter().map(solidcore_record::Seg2::length).sum();
+    if !start.is_finite() || !(size > 0.0 && size.is_finite()) || last.end().dist(first.start()) <= 1e-5 {
+        return Ok(None);
+    }
+    let near = path.to_local(start);
+    let Some((k, t, q)) = local
+        .iter()
+        .enumerate()
+        .map(|(k, s)| {
+            let t = s.closest_param(near);
+            (k, t, path.to_world(s.point_at(t)))
+        })
+        .min_by(|a, b| a.2.dist(start).total_cmp(&b.2.dist(start)))
+    else {
+        return Ok(None);
+    };
+    let at = |p: Vec2| path.to_world(p).dist(q) <= 1e-6;
+    if profile.height(q).abs() > (size * 1e-6).max(1e-6) || at(first.start()) || at(last.end()) {
+        return Ok(None);
+    }
+    let Some(seg) = local.get(k).copied() else { return Ok(None) };
+    let (mut before, mut ahead): (Vec<_>, Vec<_>) = (local[..k].to_vec(), local[k + 1..].to_vec());
+    if at(seg.start()) {
+        ahead.insert(0, seg);
+    } else if at(seg.end()) {
+        before.push(seg);
+    } else {
+        let (b, a) = seg.split_at(t);
+        before.push(b);
+        ahead.insert(0, a);
+    }
+    let behind: Vec<_> = before.into_iter().rev().map(|s| s.reversed()).collect();
+    let world = |v: Vec<solidcore_record::Seg2>| v.iter().map(|s| kernel::PathSeg::of_sketch(path, s)).collect::<Vec<_>>();
+    Ok(Some((world(ahead), world(behind))))
 }
 
 /// A closed chain `segs` (in the plane `path`) begun where `profile`'s plane crosses it nearest
