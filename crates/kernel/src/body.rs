@@ -1348,9 +1348,35 @@ impl Body {
                 index,
                 area,
                 centroid: if area > 0.0 { c / area } else { Vec3::ZERO },
-                plane_normal: (planar && n != Vec3::ZERO).then_some(n),
+                plane_normal: (planar && n != Vec3::ZERO && !self.curved_face(index)).then_some(n),
             })
             .collect())
+    }
+
+    /// Whether face `f`'s own surface can't be a plane, whatever its triangles say: a curve that
+    /// bulges less than the mesh tolerance meshes into triangles of one plane. Analytic curved
+    /// surfaces are curved; a spline surface is a plane exactly when its control points lie in one
+    /// (a revolution, which may be a flat ring, is left to its triangles).
+    fn curved_face(&self, f: usize) -> bool {
+        if self.is_mesh() {
+            return false;
+        }
+        let Some(face) = self.record().faces.get(f) else { return false };
+        let points: Vec<Vec3> = match &face.surface {
+            Surface::Plane { .. } | Surface::PlaneThrough { .. } | Surface::PlacedRevolution { .. } => return false,
+            Surface::Cylinder { .. } | Surface::Cone { .. } | Surface::Sphere { .. } | Surface::Torus { .. } | Surface::BallPatch { .. } => {
+                return true;
+            }
+            Surface::Spline { points, .. } => points.iter().flatten().map(|p| Vec3::from(*p)).collect(),
+            Surface::RationalSpline { homogeneous, .. } => {
+                homogeneous.iter().flatten().map(|h| Vec3::new(h[0] / h[3], h[1] / h[3], h[2] / h[3])).collect()
+            }
+        };
+        let tol = (self.size() * 1e-9).max(1e-12);
+        let Some(&o) = points.first() else { return false };
+        let Some(&far) = points.iter().max_by(|a, b| a.dist(o).total_cmp(&b.dist(o))) else { return false };
+        let n = points.iter().map(|p| (far - o).cross(*p - o)).max_by(|a, b| a.len().total_cmp(&b.len())).and_then(|c| c.normalized());
+        n.is_some_and(|n| points.iter().any(|p| (*p - o).dot(n).abs() > tol))
     }
 
     /// Index of the edge closest to `p` (by polyline distance).
