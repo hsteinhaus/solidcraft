@@ -38,6 +38,8 @@ mod distance;
 mod draft_corners;
 mod emboss;
 #[cfg(test)]
+mod face_plane_tests;
+#[cfg(test)]
 mod face_source_tests;
 mod fair;
 mod fill;
