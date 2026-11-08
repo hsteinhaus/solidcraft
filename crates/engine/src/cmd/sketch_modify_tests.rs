@@ -1981,6 +1981,53 @@ fn ellipse_splines_conic() {
     assert_eq!(ids(&r["curves"]).len(), 2);
 }
 
+/// A control point spline drawn with its own knots (as another CAD keeps them): the curve is the
+/// one those knots make, not the evenly spaced one over the same points, and it keeps them as a
+/// control point moves. Knots that don't fit, weights without knots and knots on a fit spline are
+/// refused.
+#[test]
+fn a_control_spline_drawn_with_its_own_knots_keeps_them() {
+    let mut s = new_sketch();
+    // Two cubic Béziers end to end (the joint knot three times): the curve passes through (3,0);
+    // they differ, so the evenly spaced spline over the same points does not.
+    let pts = json!([[0, 0], [1, 2], [2, 2], [3, 0], [4, -1], [6, -3], [9, 0]]);
+    let knots = json!([0, 0, 0, 0, 1, 1, 1, 3, 3, 3, 3]);
+    let r = run(&mut s, "sketch.spline.control_point", json!({"points": pts, "knots": knots}));
+    let sid = ids(&r["curves"])[0].clone();
+    let even = ids(&run(&mut s, "sketch.spline.control_point", json!({"points": pts}))["curves"])[0].clone();
+    let sk = sketch(&s);
+    let (si, ei) = (sk.curve_index(&sid).unwrap(), sk.curve_index(&even).unwrap());
+    let joint = Vec2::new(3.0, 0.0);
+    assert!(sk.polyline(si).iter().any(|q| q.dist(joint) < 1e-12), "through the joint");
+    assert!(sk.polyline(ei).iter().all(|q| q.dist(joint) > 1e-3), "the even spline is another curve");
+    // A control point moved: the knots stay.
+    let pid = sk.points[sk.curves[si].kind.point_ids()[1]].id.clone();
+    run(&mut s, "sketch.move_point", json!({"point": pid, "to": [1, 3]}));
+    let sk = sketch(&s);
+    let CurveKind::Spline { nurbs: Some(n), .. } = &sk.curves[si].kind else { panic!("{:?}", sk.curves[si].kind) };
+    assert_eq!(n.knots, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 3.0, 3.0, 3.0, 3.0]);
+    // Degree 5 with weights: a rational spline.
+    let five = json!([[0, 10], [1, 12], [2, 13], [3, 13], [4, 12], [5, 10]]);
+    let r = run(
+        &mut s,
+        "sketch.spline.control_point_5",
+        json!({"points": five, "knots": [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1], "weights": [1, 2, 1, 1, 2, 1]}),
+    );
+    let fid = ids(&r["curves"])[0].clone();
+    let sk = sketch(&s);
+    let CurveKind::Spline { nurbs: Some(n), degree: 5, .. } = &sk.curves[sk.curve_index(&fid).unwrap()].kind else { panic!("degree 5") };
+    assert_eq!(n.weights, vec![1.0, 2.0, 1.0, 1.0, 2.0, 1.0]);
+    for bad in [
+        json!({"points": pts, "knots": [0, 0, 0, 0, 1, 3, 3, 3, 3]}),
+        json!({"points": pts, "knots": [0, 0, 0, 0, 2, 1, 1, 3, 3, 3, 3]}),
+        json!({"points": pts, "weights": [1, 1, 1, 1, 1, 1, 1]}),
+        json!({"points": pts, "knots": knots, "weights": [1, 1, 0, 1, 1, 1, 1]}),
+    ] {
+        assert!(s.execute("sketch.spline.control_point", &bad).is_err(), "{bad}");
+    }
+    assert!(s.execute("sketch.spline.fit_point", &json!({"points": pts, "knots": knots})).is_err());
+}
+
 /// #6533: Add Spline Point puts a fit point on the curve at the spot, between its neighbours, as
 /// one undo step. A dimension between two old fit points and a line joined to the spline's end
 /// stay, and the curve still runs through every old point.
