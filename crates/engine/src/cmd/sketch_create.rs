@@ -80,12 +80,12 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "CREATE")
         .icon("spline_cv")
         .enabled(in_sketch)
-        .params(concat!("points: control points (2…500), cubic", created_doc!())),
+        .params(concat!("points: control points (2…500), cubic; knots?: its own clamped knot vector (points + 4 knots; default evenly spaced), weights?: one positive weight per point (needs knots; default all 1)", created_doc!())),
     CommandSpec::new("sketch.spline.control_point_5", "Control Point Spline (Degree 5)", spline_cv5)
         .at("SKETCH", "CREATE")
         .icon("spline_cv")
         .enabled(in_sketch)
-        .params(concat!("points: control points (2…500), degree 5", created_doc!())),
+        .params(concat!("points: control points (2…500), degree 5; knots?: its own clamped knot vector (points + 6 knots; default evenly spaced), weights?: one positive weight per point (needs knots; default all 1)", created_doc!())),
     CommandSpec::new("sketch.spline.insert_point", "Add Spline Point", spline_insert_point)
         .icon("spline")
         .enabled(in_sketch)
@@ -691,6 +691,7 @@ fn spline(s: &mut Session, p: &Value, cmd: &str, control: bool, degree: u8) -> R
     if periodic && (control || degree != 3) {
         return Err(bad(cmd, "periodic mode requires a cubic fit spline"));
     }
+    let nurbs = knots_of(p, cmd, control)?;
     let p = &super::sketch_project::snap_points(s, p, cmd)?;
     let (out, info) = edit(s, p, cmd, false, |sk, doc| {
         let mut pts = point_list(sk, doc, p, cmd)?;
@@ -700,11 +701,31 @@ fn spline(s: &mut Session, p: &Value, cmd: &str, control: bool, degree: u8) -> R
         {
             pts.push(*pts.first().ok_or_else(|| bad(cmd, "missing first point"))?);
         }
-        let c = sk.add_curve(CurveKind::Spline { pts, control, degree, periodic, nurbs: None }, None)?;
+        let c = sk.add_curve(CurveKind::Spline { pts, control, degree, periodic, nurbs }, None)?;
         mark_construction(sk, &[c], p);
         Ok((ids_of(sk, &[c]), Vec::new()))
     })?;
     Ok(result(out, info))
+}
+
+/// A control spline's own knots and weights (`knots`, `weights`); `add_curve` refuses ones that
+/// don't fit its points and degree.
+fn knots_of(p: &Value, cmd: &str, control: bool) -> Result<Option<solidcraft_sketch::Nurbs>> {
+    let list = |k: &str| -> Result<Option<Vec<f64>>> {
+        match p.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Array(a)) => {
+                a.iter().map(|x| x.as_f64().ok_or_else(|| bad(cmd, format!("`{k}` must be numbers")))).collect::<Result<Vec<f64>>>().map(Some)
+            }
+            Some(_) => Err(bad(cmd, format!("`{k}` must be a list of numbers"))),
+        }
+    };
+    match (list("knots")?, list("weights")?) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => Err(bad(cmd, "`weights` need `knots`")),
+        (Some(_), _) if !control => Err(bad(cmd, "only a control point spline takes knots")),
+        (Some(knots), weights) => Ok(Some(solidcraft_sketch::Nurbs { knots, weights: weights.unwrap_or_default() })),
+    }
 }
 
 fn spline_fit(s: &mut Session, p: &Value) -> Result<Value> {
