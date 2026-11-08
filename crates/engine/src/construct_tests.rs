@@ -908,3 +908,38 @@ fn construction_on_a_moved_body_moves_with_it() {
     let (o, d) = axis(&s, "Tether");
     assert!(on_line(o, d, Vec3::new(0.0, 0.0, 20.0)) && on_line(o, d, Vec3::new(0.0, 50.0, 20.0)), "{o:?} {d:?}");
 }
+
+/// A midplane between the end faces of the middle placement of a linked design. The picks are
+/// named among every placement, as the plane is built: named among the first placements only,
+/// they got no name, and the bare point took a rod's round side 0.5 mm away ("not planar").
+#[test]
+fn midplane_on_a_later_placement_of_a_linked_design() {
+    let dir = std::env::temp_dir().join(format!("solidcraft-construct-{}-placements", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (file, rod) = (dir.join("block.solidcraft"), dir.join("rod.solidcraft"));
+    let mut part = Session::default();
+    run(&mut part, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    run(&mut part, "file.save", json!({"path": file}));
+    let mut part = Session::default();
+    run(&mut part, "solid.cylinder", json!({"base": [45.5, 5, -5], "radius": 5, "height": 20}));
+    run(&mut part, "file.save", json!({"path": rod}));
+    for pattern in [false, true] {
+        let mut s = Session::default();
+        run(&mut s, "component.insert_design", json!({"path": rod, "name": "Rod"}));
+        run(&mut s, "component.insert_design", json!({"path": file, "name": "Block"}));
+        if pattern {
+            run(&mut s, "solid.pattern.rectangular", json!({"components": ["Block"], "dir1": [1, 0, 0], "count1": 3, "spacing1": 30}));
+        } else {
+            for x in [30, 60] {
+                run(&mut s, "component.insert_design", json!({"path": file, "reuse": true, "translate": [x, 0, 0]}));
+            }
+        }
+        run(&mut s, "construct.plane.midplane", json!({"a": {"face": [40, 5, 5]}, "b": {"face": [30, 5, 5]}, "name": "M"}));
+        let errors: Vec<String> = s.model.results.iter().filter_map(|r| r.error.clone()).collect();
+        assert!(errors.is_empty(), "pattern {pattern}: {errors:?}");
+        let m = plane(&s, "M");
+        assert!(parallel(m.normal(), Vec3::X) && on_plane(&m, Vec3::new(35.0, 0.0, 0.0)), "pattern {pattern}: {m:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
