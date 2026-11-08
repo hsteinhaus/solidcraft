@@ -676,6 +676,11 @@ fn picked_on(b: &Brep, e: EdgeId) -> Option<(solidcore::geom::attribute::Attribu
 /// only shortened still reads as picked.
 const OVERFLOW_GOES_FIRST: bool = true;
 
+/// The tangency (radians) within which [`overflow_first`] takes picked rounds as one chain: the
+/// executive's default, at which its corners end a round running on into another at a smooth
+/// vertex (`SetFilletParameters`' 10 degrees).
+const CHAIN_TANGENCY: f64 = 10.0 * (std::f64::consts::PI / 180.0);
+
 /// `overflow_first`: the rounds of [`blend_call`] when blends of several edges overflow their
 /// faces (`round_edges` stopped in the copy `w` of `body`, `picked` its picked edges, `each` their
 /// sizes). The blends that overflow on their own (each edge's alone, classified in `w`, which
@@ -685,9 +690,10 @@ const OVERFLOW_GOES_FIRST: bool = true;
 /// points are flagged in `dropped`. Two rounds mitred at a face's concave corner (`mitred`, the edges
 /// of each such pair two by two, as the stopped call found them in `w`) meet in their mitre, each run
 /// on past the corner: one goes first with the other, so a round mitred to one that overflows goes
-/// first too (fork 9ba2b12). Where none overflows on its own, or all go first, the edges are rounded
-/// together as before. The result is the new body. Unlike the capi, the tags come off it
-/// (nothing reads them after the call, and a later call's copy would carry them on).
+/// first too (fork 9ba2b12); so do the rounds of one tangent chain. Where none overflows on its own,
+/// or all go first, the edges are rounded together as before. The result is the new body. Unlike
+/// the capi, the tags come off it (nothing reads them after the call, and a later call's copy would
+/// carry them on).
 #[allow(clippy::too_many_arguments)] // the capi's overflow_first
 fn overflow_first(
     k: &mut Kernel,
@@ -731,7 +737,13 @@ fn overflow_first(
     }
     // A round mitred to one that goes first goes with it, through every mitre.
     let place = |e: &EdgeId| picked.iter().position(|p| p == e);
-    let pairs: Vec<(usize, usize)> = mitred.as_chunks::<2>().0.iter().filter_map(|[a, b]| Some((place(a)?, place(b)?))).collect();
+    let mut pairs: Vec<(usize, usize)> = mitred.as_chunks::<2>().0.iter().filter_map(|[a, b]| Some((place(a)?, place(b)?))).collect();
+    // So does a round running on tangentially into one that goes first: apart, each would end at
+    // their smooth vertex, which no End builds (a rail rolling over into it).
+    for (i, &e) in picked.iter().enumerate() {
+        let chain = solidcore::blend::blend_refusal::tangent_chain(k, w, &[e], CHAIN_TANGENCY)?;
+        pairs.extend(chain.iter().filter_map(place).map(|j| (i, j)));
+    }
     let mut grew = true;
     while grew {
         grew = false;
