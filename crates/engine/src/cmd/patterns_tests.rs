@@ -442,6 +442,23 @@ fn patterns_of_components_place_occurrences() {
     assert!(s.execute("solid.pattern.circular", &json!({"components": ["Nope"], "axis": "Z", "count": 2})).is_err());
 }
 
+/// A pattern of one placement (`Peg:2`) copies that placement, not the component's first.
+#[test]
+fn patterns_of_a_placement_start_from_it() {
+    let mut s = Session::default();
+    run(&mut s, "component.create", json!({"name": "Peg"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "occurrence.copy", json!({"component": "Peg", "translate": [0, 50, 0]}));
+    let second = s.doc.occurrences.last().map(|o| o.name.clone()).unwrap();
+    run(&mut s, "solid.pattern.rectangular", json!({"components": [second], "dir1": [0, 0, 1], "count1": 2, "spacing1": 20}));
+    let m = run(&mut s, "inspect.measure", json!({}));
+    let mins: Vec<[f64; 3]> = m["bodies"].as_array().unwrap().iter().map(|b| [0, 1, 2].map(|i| b["bbox"]["min"][i].as_f64().unwrap())).collect();
+    assert!(mins.iter().any(|p| p[1].abs() < 1e-6 && p[2].abs() < 1e-6), "{mins:?}");
+    assert!(mins.iter().any(|p| (p[1] - 50.0).abs() < 1e-6 && (p[2] - 20.0).abs() < 1e-6), "the copy stands on `{second}`: {mins:?}");
+    assert_eq!(mins.len(), 3, "{mins:?}");
+}
+
 /// #4763: a body of a component moved 60 mm along X, patterned from the root. The copy goes
 /// where the pattern puts the body as it is shown (beside it), not where the body sits before
 /// its component is placed (x 10, near the origin).
