@@ -283,7 +283,10 @@ pub(super) fn geo(s: &Session, v: Option<&Value>, cmd: &str, what: &str) -> Resu
         Err(GeoFormError::Saved(e)) => return Err(bad(cmd, format!("`{what}`: {e}"))),
         Err(GeoFormError::Unknown) => return Err(bad(cmd, format!("`{what}` must be {REF}"))),
     };
-    g.name_picks(&s.model.state());
+    // Named among the bodies the root's construction resolves it in: every placement of a
+    // component, not its first only (where a later placement's face is no face at all).
+    let st = if s.active_component == 0 { s.world_state()? } else { s.model.state() };
+    g.name_picks(&st);
     Ok(g)
 }
 
