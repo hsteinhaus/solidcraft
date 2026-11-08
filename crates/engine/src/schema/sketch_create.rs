@@ -1015,6 +1015,14 @@ pub struct ControlPointSplineParams {
     #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Periodic<false>")]
     pub periodic: Option<Periodic<false>>,
+    /// Its own knot vector, kept as its points move: clamped, the point count plus the degree plus
+    /// one knots, never decreasing, no inner knot repeated more than the degree. Default: evenly
+    /// spaced.
+    #[serde(default)]
+    pub knots: Option<Vec<f64>>,
+    /// One positive weight per point, a rational spline (needs `knots`). Default: all 1.
+    #[serde(default)]
+    pub weights: Option<Vec<f64>>,
     /// Make it construction geometry. Default: false.
     #[serde(default)]
     pub construction: Option<bool>,
