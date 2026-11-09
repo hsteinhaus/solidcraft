@@ -166,6 +166,20 @@ fn face_of<'a>(st: &'a ModelState, at: Vec3, name: &Option<String>) -> Result<(&
     Err(bad(format!("no face at {at:?}")))
 }
 
+/// The edge a stored name finds, on any body. The very edge on several bodies (the placements
+/// of a component share their names): the one the reference's point lies on, as for a face.
+fn named_edge<'a>(st: &'a ModelState, name: &str, at: Vec3) -> Option<(&'a ModelBody, crate::name_lookup::EdgeHit)> {
+    let hits: Vec<_> = bodies(st).filter_map(|b| crate::name_lookup::locate_edge(b, name, at).ok().map(|hit| (b, hit))).collect();
+    if let [one] = hits.as_slice() {
+        return Some(*one);
+    }
+    let mut on = hits.into_iter().filter(|(_, hit)| hit.on_point);
+    match (on.next(), on.next()) {
+        (Some(hit), None) => Some(hit),
+        _ => None,
+    }
+}
+
 /// The edge picked, as a polyline.
 fn edge_points(st: &ModelState, at: Vec3, name: &Option<String>) -> Result<Vec<Vec3>> {
     edge_pick(st, at, name).map(|(_, _, pts)| pts)
@@ -177,7 +191,7 @@ fn edge_points(st: &ModelState, at: Vec3, name: &Option<String>) -> Result<Vec<V
 fn edge_pick<'a>(st: &'a ModelState, at: Vec3, name: &Option<String>) -> Result<(&'a ModelBody, usize, Vec<Vec3>)> {
     let mut at = at;
     if let Some(n) = name {
-        at = bodies(st).find_map(|b| crate::naming::find_edge(b, n, at).ok()).ok_or_else(|| DocError::reselect(n.as_str()))?;
+        at = named_edge(st, n, at).map(|(_, hit)| hit.point).ok_or_else(|| DocError::reselect(n.as_str()))?;
     }
     let mut best: Option<(f64, &ModelBody, usize, Vec<Vec3>)> = None;
     for b in bodies(st) {
@@ -222,8 +236,7 @@ fn named_vertex(st: &ModelState, at: Vec3, names: &[String]) -> Option<Vec3> {
             // on the body that has it: picked again by a point on it, a corner found the first
             // edge of any body through that corner, such as another body's edge running past
             // it, so a vertex took that edge's end (#8650).
-            bodies(st).find_map(|b| {
-                let hit = crate::name_lookup::locate_edge(b, n, at).ok()?;
+            named_edge(st, n, at).and_then(|(b, hit)| {
                 let m = b.mesh();
                 let pts = m.edges.get(hit.edge)?;
                 Some([*pts.first()?, *pts.last()?])
@@ -801,7 +814,7 @@ impl GeoRef {
         match self {
             GeoRef::Edge { at, name } => {
                 let on = match name.as_deref() {
-                    Some(n) => bodies(st).find_map(|b| crate::naming::find_edge(b, n, *at).ok())?,
+                    Some(n) => named_edge(st, n, *at)?.1.point,
                     None => *at,
                 };
                 edge_pick(st, on, &None).ok().map(|_| on)
