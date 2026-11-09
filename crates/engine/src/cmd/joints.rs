@@ -379,6 +379,15 @@ pub(crate) fn occurrence_at(s: &Session, p: Vec3) -> Option<u64> {
 /// A joint origin from parameters: a named origin, or a snap given in world coordinates.
 pub(crate) fn origin_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointOrigin> {
     let mut o = origin_snap_param(s, v, cmd)?;
+    // An x along the origin's z leaves its turn to chance (a default x would stand in): refused,
+    // as for a point origin
+    if let Some(x) = v.and_then(|v| v.get("x")).and_then(vec3) {
+        let m = s.doc.origin_world(&s.model.state(), &o).map_err(|e| bad(cmd, e.to_string()))?;
+        let z = Vec3::new(m[2][0], m[2][1], m[2][2]);
+        if !x.is_finite() || x.cross(z).len() <= 1e-9 * x.len().max(1.0) {
+            return Err(bad(cmd, "an origin's `x` must be a direction off its z axis"));
+        }
+    }
     let given = |k: &str| v.and_then(|v| v.get(k)).filter(|x| !x.is_null());
     if given("z_axis").is_some() || given("x_axis").is_some() {
         let t = if o.occurrence == 0 { solidcraft_doc::IDENTITY } else { joints::occurrence_world(&s.doc, o.occurrence) };
