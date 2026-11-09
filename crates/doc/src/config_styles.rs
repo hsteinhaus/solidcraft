@@ -296,9 +296,19 @@ impl Document {
             return Ok(self.without_copies(body, indices));
         }
         if let Some(super::FaceCertificate::Imported { payload_sha256, item, face }) = &target.certificate {
-            let indices: Vec<_> = body.body.face_sources().into_iter().flatten().enumerate().filter_map(|(index, source)| {
+            let mut indices: Vec<_> = body.body.face_sources().into_iter().flatten().enumerate().filter_map(|(index, source)| {
                 matches!(source, Some(solidcraft_kernel::FaceSource::Imported { item: current_item, face: current_face, payload_sha256: Some(digest), producer: Some(producer) }) if current_item == item && current_face == face && digest == payload_sha256 && *producer == target.origin_feature).then_some(index)
             }).collect();
+            // The linked design saved again (a new payload): the face is found again by its
+            // name among the faces the same feature imports.
+            if indices.is_empty() {
+                let names = crate::naming::face_names(body);
+                indices = body.body.face_sources().into_iter().flatten().enumerate().filter_map(|(index, source)| {
+                    (matches!(source, Some(solidcraft_kernel::FaceSource::Imported { producer: Some(producer), .. }) if *producer == target.origin_feature)
+                        && names.get(index).is_some_and(|name| crate::naming::strip_piece(name) == target.name))
+                    .then_some(index)
+                }).collect();
+            }
             if indices.is_empty() {
                 return Err(DocError::Unknown("immutable import face certificate no longer exists".into()));
             }
