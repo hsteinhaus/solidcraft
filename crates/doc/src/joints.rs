@@ -1226,7 +1226,11 @@ pub fn vertex_edges(doc: &Document, st: &ModelState, component: u64, pick: Vec3)
         let p = apply_point(&mat_inverse(&offset)?, pick);
         let tol = (b.body.size() * 1e-3).max(1e-3);
         let m = b.mesh();
-        let ends_here = |e: &Vec<Vec3>| [e.first(), e.last()].into_iter().flatten().any(|q| q.dist(p) <= tol);
+        // the corner picked: the edge end nearest the pick within reach; the edges that end
+        // there exactly, not those of another corner within reach
+        let ends = || m.edges.iter().flat_map(|e| [e.first(), e.last()]).flatten();
+        let Some(v) = ends().filter(|q| q.dist(p) <= tol).min_by(|a, b| a.dist(p).total_cmp(&b.dist(p))).copied() else { continue };
+        let ends_here = |e: &Vec<Vec3>| [e.first(), e.last()].into_iter().flatten().any(|q| q.dist(v) <= 1e-6 * (1.0 + v.len()));
         let mut meet: Vec<String> =
             m.edges.iter().zip(crate::naming::edge_names(b)).filter(|(e, n)| !n.is_empty() && ends_here(e)).map(|(_, n)| n).collect();
         meet.sort();
