@@ -559,7 +559,14 @@ fn origin_snap_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointO
         Err(e) if what == "circle" => {
             let snap = match joints::round_end_at(&s.doc, &st, component, local(world)) {
                 Some(Snap::CircleCenter { pick, face, end, .. }) => Snap::CircleCenter { pick, face, end, x: x_param(s, v, component, &inv, cmd)? },
-                _ => circle_centre(s, occurrence, local(world)).ok_or(e)?,
+                _ => match circle_centre(s, occurrence, local(world)) {
+                    Some(snap) => snap,
+                    // A circular edge of any face (a chamfer's or a cone's rim), by its name.
+                    None => {
+                        let edge = joints::circle_edge_name_at(&s.doc, &st, component, local(world)).ok_or(e)?;
+                        Snap::Rim { pick: local(world), edge, x: x_param(s, v, component, &inv, cmd)? }
+                    }
+                },
             };
             settle(s, JointOrigin { occurrence, snap }, v, cmd)
         }
