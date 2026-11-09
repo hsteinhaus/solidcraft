@@ -3070,3 +3070,28 @@ fn a_components_joint_origin_serves_its_other_placements_by_name() {
     assert!(near(at(&s).0, Vec3::new(55.0, 5.0, 15.0)), "{:?}", at(&s));
     assert!(s.execute("joint.origin", &json!({"occurrence": "Part:2", "origin": "Nope"})).is_err());
 }
+
+/// A face-centre origin is at the face's exact centre, worked out from its curves, not from its
+/// mesh: a half disc's area centroid, 4R/3π from its straight side; for a half disc with an
+/// off-centre hole, the centre of the area its outline encloses (the same point).
+#[test]
+fn a_face_centre_origin_is_the_faces_exact_centroid() {
+    let mut s = Session::default();
+    let r = 20.0;
+    for (x0, name) in [(0.0, "Disc"), (100.0, "Holed")] {
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": name}));
+        run(&mut s, "sketch.line", json!({"points": [[x0 - r, 0], [x0 + r, 0]]}));
+        run(&mut s, "sketch.arc.center_point", json!({"center": [x0, 0], "start": [x0 + r, 0], "end": [x0 - r, 0]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"sketch": name, "distance": 5, "operation": "new"}));
+    }
+    run(&mut s, "solid.cylinder", json!({"base": [105, 6, -1], "radius": 2, "height": 10, "operation": "cut"}));
+    let want_y = 4.0 * r / (3.0 * std::f64::consts::PI);
+    for (pick, x0, name) in [([0.0, 5.0, 5.0], 0.0, "D"), ([100.0, 3.0, 5.0], 100.0, "H")] {
+        run(&mut s, "joint.origin", json!({"occurrence": 0, "face": pick, "name": name}));
+        let o = s.doc.assembly.origins.iter().find(|o| o.name == name).map(|o| o.origin.clone()).unwrap();
+        let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), &o).unwrap();
+        let at = Vec3::new(m[3][0], m[3][1], m[3][2]);
+        assert!(at.dist(Vec3::new(x0, want_y, 5.0)) < 1e-9, "{name}: {at:?} against ({x0}, {want_y}, 5)");
+    }
+}
