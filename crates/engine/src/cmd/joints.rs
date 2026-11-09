@@ -31,7 +31,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("joint.create", "Joint", joint).at("SOLID", "ASSEMBLE").icon("joint").key("J").params(
         "type: rigid|revolute|slider|cylindrical|pin_slot|planar|ball, or a relation: parallel|perpendicular|angle|point_on_plane|point_on_line|line_on_plane \
          (ties only some directions or points, made where the parts are; several between two parts add up); a, b: joint origins ({occurrence, face|circle|edge|point: [x,y,z] in world, or face|circle: \"<face name>\"; z? for a point, end?, x? as joint.origin} | origin name); \
-         values?: [angles in deg or expressions, distances]; limits?: [[min, max] | null…]; flip?: bool (default false: the origins are mated, \
+         suppressed?: bool (made suppressed: it places nothing, its parts stay where they are, until joint.edit unsuppresses it); values?: [angles in deg or expressions, distances]; limits?: [[min, max] | null…]; flip?: bool (default false: the origins are mated, \
          b's z against a's as two faces meet; true: b's z along a's, so two origins given at one point with the same z and x stay as they are; \
          a point origin without x takes its x from z, so give x on both, or use joint.as_built, to keep a turned part where it is); \
          offset?: mm or an expression; angle?: deg or an expression (an angle relation's tilt from mated; for other joints the default \
@@ -954,7 +954,16 @@ fn add_joint(s: &mut Session, mut j: Joint, p: &Value) -> Result<Value> {
     let name = j.name.clone();
     // A new joint starts shown, even if a stale visibility entry came from an older design.
     s.visibility.hidden_joints.retain(|h| *h != id);
+    let suppressed = j.suppressed;
     s.doc_mut().assembly.joints.push(j);
+    // Made suppressed it places nothing: its parts stay where they are (the others are solved as
+    // they were), and it says how the joints stand without moving anything.
+    if suppressed {
+        let mut out = sol_json(&joints::solve(&s.doc, &s.model.state()), p);
+        out["joint"] = json!(id);
+        out["name"] = json!(name);
+        return Ok(out);
+    }
     let mut sol = resolve(s);
     if sol.conflicts.iter().any(|(c, ..)| *c == id) && close_by_half_turn(s, id, &sol) {
         sol = resolve(s);
@@ -1128,7 +1137,7 @@ fn joint(s: &mut Session, p: &Value) -> Result<Value> {
         flip: bool_(p, "flip").unwrap_or(false),
         offset,
         angle: angle.unwrap_or(0.0),
-        suppressed: false,
+        suppressed: bool_(p, "suppressed").unwrap_or(false),
         exprs: JointExprs { offset: typed(p.get("offset")), angle: typed(p.get("angle")), values: value_exprs(p) },
     };
     // No angle given: B keeps its turn about the joint's axis where a half turn would otherwise
