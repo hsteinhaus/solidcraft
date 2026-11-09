@@ -107,8 +107,11 @@ pub(crate) fn mass_properties(body: &Body, relative_accuracy: f64) -> Result<Mas
         let store = AttributeStore::default();
         let attrs = PropertyAttributes { store: &store, key_of: &|_| ObjectKey(0) };
         // Moments about the middle of the box, moved to the centroid below: about the world
-        // origin, a body far from it would lose its inertia to cancellation.
-        let o = brep_bounding_box(k, b, false)?.mid();
+        // origin, a body far from it would lose its inertia to cancellation. The exact box: the
+        // loose one holds the surfaces' control hulls, which can lie far off (a trimmed patch of
+        // a large sphere), and the gaps a tolerant model leaves between its faces cost volume in
+        // proportion to that distance (a blade from STEP 0.65 % low, about a point 160 mm off).
+        let o = brep_bounding_box(k, b, true)?.mid();
         if !finite(&[o.x, o.y, o.z]) {
             return Err(invalid("non-finite box"));
         }
