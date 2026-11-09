@@ -1910,7 +1910,24 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
         })
         .collect();
     let links: Vec<Value> = s.doc.assembly.links.iter().map(|l| link_json(s, &st, l)).collect();
-    let origins: Vec<Value> = s.doc.assembly.origins.iter().map(|o| json!({"name": o.name, "occurrence": o.origin.occurrence})).collect();
+    let origins: Vec<Value> = s
+        .doc
+        .assembly
+        .origins
+        .iter()
+        .map(|o| {
+            let mut v = json!({"name": o.name, "occurrence": o.origin.occurrence});
+            // What it is and where it is in the world, to check against another program's frame.
+            if let Ok(Value::Object(snap)) = serde_json::to_value(&o.origin.snap) {
+                v["kind"] = snap.get("type").cloned().unwrap_or(Value::Null);
+            }
+            match origin_world_frame(s, &st, &o.origin) {
+                Ok((origin, z, x)) => v["frame"] = json!({"origin": origin, "z": z, "x": x}),
+                Err(e) => v["error"] = json!(e.to_string()),
+            }
+            v
+        })
+        .collect();
     let mut out = sol_json(&sol, p);
     out["joints"] = json!(js);
     out["links"] = json!(links);
@@ -1949,6 +1966,14 @@ fn link_json(s: &Session, st: &solidcraft_doc::ModelState, l: &MotionLink) -> Va
         o.insert("lift".into(), lift_json(l, angle));
     }
     v
+}
+
+/// Where a joint origin is in the world: its origin, z and x (its occurrence placed as the design
+/// places it now).
+fn origin_world_frame(s: &Session, st: &solidcraft_doc::ModelState, o: &JointOrigin) -> solidcraft_doc::Result<(Vec3, Vec3, Vec3)> {
+    let m = s.doc.origin_world(st, o)?;
+    let col = |i: usize| Vec3::new(m[i][0], m[i][1], m[i][2]);
+    Ok((col(3), col(2), col(0)))
 }
 
 fn solve_cmd(s: &mut Session, p: &Value) -> Result<Value> {
