@@ -95,6 +95,16 @@ pub enum Snap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x: Option<XRef>,
     },
+    /// A point of a round face's axis: the face's start or end along its axis, or halfway (Fusion's
+    /// key points of a cylindrical face), z along the axis as the kernel turns it. `face` is the
+    /// face's persistent name, which finds it again; `pick` is a point on it as it was picked.
+    Axial {
+        pick: Vec3,
+        face: String,
+        at: AxialPoint,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<XRef>,
+    },
     /// A joint origin the linked design of the component defines (`DesignLink::origins`), by its
     /// name there: it is where that design has it, as the link last read it.
     Linked { origin: String },
@@ -124,6 +134,15 @@ pub enum Snap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x: Option<Vec3>,
     },
+}
+
+/// Where along a round face's axis an [`Snap::Axial`] origin sits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AxialPoint {
+    Start,
+    Middle,
+    End,
 }
 
 /// The z of an edge origin that isn't its face's normal (component coordinates); its x follows
@@ -179,6 +198,12 @@ impl Snap {
         if let Snap::SketchPoint { x: Some(XRef::Face { face, .. }), .. } = self {
             out.push(face);
         }
+        if let Snap::Axial { face, x, .. } = self {
+            out.push(face);
+            if let Some(XRef::Face { face, .. }) = x {
+                out.push(face);
+            }
+        }
         if let Snap::CircleCenter { end: Some(end), .. } = self {
             out.push(end);
         }
@@ -208,6 +233,12 @@ impl Snap {
             Snap::Edge { edge, face, corner, .. } => out.extend(edge.iter_mut().chain(face.iter_mut()).chain(corner.iter_mut())),
             Snap::SketchPoint { x: Some(XRef::Face { face, .. }), .. } => out.push(face),
             Snap::Offset { snap, .. } => return snap.face_names_mut(),
+            Snap::Axial { face, x, .. } => {
+                out.push(face);
+                if let Some(XRef::Face { face, .. }) = x {
+                    out.push(face);
+                }
+            }
             _ => {}
         }
         out
@@ -261,6 +292,7 @@ impl Snap {
             Snap::SketchPoint { x, .. } => x_ok(x),
             Snap::Offset { snap, .. } => snap.is_finite(),
             Snap::Linked { .. } => true,
+            Snap::Axial { pick, x, .. } => pick.is_finite() && x_ok(x),
         }
     }
 }
@@ -903,6 +935,18 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             frame(c, n, face::x_axis(doc, st, comp, x.as_ref(), c)?).ok_or_else(bad)
         }
         Snap::Edge { .. } => edge::edge_frame(doc, st, component_of(doc, o.occurrence)?, &o.snap),
+        Snap::Axial { pick, face: name, at, x } => {
+            let comp = component_of(doc, o.occurrence)?;
+            let nf = face::named_face(doc, st, comp, *pick, name)?;
+            let c = nf.cylinder().ok_or_else(|| DocError::Invalid(format!("joint origin: face `{name}` is not round")))?;
+            let along = match at {
+                AxialPoint::Start => c.start,
+                AxialPoint::Middle => 0.5 * (c.start + c.end),
+                AxialPoint::End => c.end,
+            };
+            let centre = c.axis_point + c.axis * along;
+            frame(centre, *c.axis, face::x_axis(doc, st, comp, x.as_ref(), centre)?).ok_or_else(bad)
+        }
         Snap::Linked { origin } => {
             let comp = component_of(doc, o.occurrence)?;
             let link =

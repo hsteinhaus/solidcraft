@@ -152,6 +152,7 @@ fn references(doc: &Document, snap: &Snap) -> Vec<Value> {
         }
         Snap::Offset { snap, .. } => return references(doc, snap),
         Snap::Frame { .. } | Snap::Point { .. } | Snap::SketchPoint { .. } | Snap::Linked { .. } => {}
+        Snap::Axial { face: f, .. } => out.push(with_role("face", face_ref(doc, f))),
     }
     out
 }
