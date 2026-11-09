@@ -34,6 +34,7 @@ fn schemas_and_the_key_check_agree() {
             "name",
             "operation",
             "participants",
+            "profile_frame",
             "profiles",
             "side",
             "sketch",
