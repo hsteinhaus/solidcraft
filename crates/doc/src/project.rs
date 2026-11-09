@@ -753,19 +753,31 @@ fn lost(reference: &str) -> DocError {
 
 /// The edge a link's stored name finds, and the body it is on: the link's body, or, when no
 /// body has that name any more (it was joined into another), the one body on which the name
-/// finds an edge.
-fn locate_named_edge(st: &ModelState, body: &str, name: &str, at: Vec3) -> Option<(String, crate::naming::EdgeHit)> {
+/// finds an edge, unless that may be another placement than the one the link named.
+fn locate_named_edge(doc: &Document, st: &ModelState, body: &str, name: &str, at: Vec3) -> Option<(String, crate::naming::EdgeHit)> {
     let hit = |b: &crate::ModelBody| crate::naming::locate_edge(b, name, at).ok().map(|hit| (b.name.clone(), hit));
     match st.body(body) {
         Some(b) => hit(b),
         None => {
             let mut found = st.bodies.iter().filter(|b| !b.body.is_mesh()).filter_map(hit);
             match (found.next(), found.next()) {
-                (Some(one), None) => Some(one),
+                (Some(one), None) if !another_placement(doc, st, body, &one.0) => Some(one),
                 _ => None,
             }
         }
     }
+}
+
+/// Whether body `found` may be another placement than the one a link named `stored` (which no
+/// body has now): a body of a component placed more than once, whose placements share its edge
+/// names (the model holds only some of them), or one whose placement `stored` names. A link
+/// whose placement went (deleted, or renamed by a move into another component) took the first
+/// placement's edge.
+fn another_placement(doc: &Document, st: &ModelState, stored: &str, found: &str) -> bool {
+    let Some(b) = st.body(found) else { return true };
+    let component = doc.model_body_component(b);
+    component != 0
+        && (doc.placements().iter().filter(|(c, ..)| *c == component).count() > 1 || stored.starts_with(&format!("{} (", b.definition_name())))
 }
 
 /// An edge found by its persistent name: edge `index` of `body`, with the link's point `near`
@@ -1051,7 +1063,7 @@ fn refresh_links_in(
         // edge has the name any more no other edge is taken for it: the sketch fails.
         let mut named_edge = None;
         if let (Some(name), LinkSource::Edge { body, at }) = (&l.edge_name, &source) {
-            let (body, hit) = locate_named_edge(st, body, name, *at).ok_or_else(|| DocError::reselect(name.as_str()))?;
+            let (body, hit) = locate_named_edge(doc, st, body, name, *at).ok_or_else(|| DocError::reselect(name.as_str()))?;
             warn.extend(hit.note(name).map(|note| format!("projected {note}")));
             named_edge = Some((body, hit.edge, *at));
         }
