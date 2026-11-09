@@ -3093,3 +3093,21 @@ fn a_joint_made_suppressed_moves_nothing_until_unsuppressed() {
     // Unsuppressed, B's bottom sits on A's top: its corner goes up to A's top face.
     assert!(near(place(&s, "B", Vec3::new(25.0, 5.0, 0.0)), Vec3::new(5.0, 5.0, 10.0)), "{:?}", place(&s, "B", Vec3::new(25.0, 5.0, 0.0)));
 }
+
+/// A circle picked on a placed copy of a component placed twice, where the boxes of both
+/// copies hold the pick (the Tarot motor's second bearing, inside the first's box): the origin
+/// is on the copy the circle is on, not on the first placement, in whose frame no round end
+/// lies there.
+#[test]
+fn a_circle_on_the_second_placement_of_a_part_is_that_placements() {
+    let mut s = Session::default();
+    run(&mut s, "component.create", json!({"name": "Pin", "grounded": false}));
+    run(&mut s, "solid.cylinder", json!({"base": [0, 0, 0], "axis": [0, 0, 1], "radius": 2, "height": 10, "operation": "new"}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "occurrence.copy", json!({"component": "Pin", "translate": [0, 0, 3]}));
+    run(&mut s, "joint.origin", json!({"circle": [2, 0, 3], "name": "Bottom"}));
+    let o = s.doc.assembly.origins.iter().find(|o| o.name == "Bottom").map(|o| o.origin.clone()).unwrap();
+    let m = s.doc.origin_world(&s.model.state(), &o).unwrap();
+    assert!(near(Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(0.0, 0.0, 3.0)), "{o:?} {m:?}");
+    assert!((m[2][2].abs() - 1.0).abs() < 1e-9, "{m:?}");
+}
