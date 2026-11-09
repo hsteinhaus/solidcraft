@@ -195,4 +195,52 @@ mod tests {
             assert!(rel(cone.volume, cone_volume) < 5e-4, "frustum at {at:?}: {} vs {cone_volume}", cone.volume);
         }
     }
+
+    /// A post cut to a sphere of radius 5 m: the sphere's patch reaches 5 m from the post, so its
+    /// control hull, and the loose box around it, are centred far below it. Integrated about that
+    /// centre, the small gaps the intersection's approximated edges leave between the faces were
+    /// multiplied by the 5 m and the volume came out 1e-4 low (a free-form propeller blade
+    /// imported from STEP, 0.65 % low). About the middle of the body's own box it is the volume
+    /// worked out by quadrature: over the post's base disk, the run along its axis to the sphere.
+    #[test]
+    fn volume_is_integrated_about_the_body_not_its_control_hull() {
+        let big = 5000.0;
+        let centre = Vec3::new(0.0, 0.0, -big);
+        let axis = Vec3::new(0.3, 0.2, 1.0).normalized().unwrap();
+        let (base, r) = (Vec3::new(0.0, 0.0, -20.0), 6.0);
+        let ball = crate::sphere(centre, big).unwrap();
+        let post = cylinder(base, axis, r, 40.0).unwrap();
+        let cap = boolean(&ball, &post, BoolOp::Intersect).unwrap().unwrap();
+        let (e1, n) = (axis.cross(Vec3::X).normalized().unwrap(), 48);
+        let e2 = axis.cross(e1);
+        // Gauss-Legendre nodes and weights on [-1, 1] (Newton on the Legendre polynomial).
+        let gauss: Vec<(f64, f64)> = (0..n)
+            .map(|i| {
+                let mut x = (std::f64::consts::PI * (i as f64 + 0.75) / (n as f64 + 0.5)).cos();
+                loop {
+                    let (mut p0, mut p1) = (1.0, x);
+                    for k in 2..=n {
+                        (p0, p1) = (p1, ((2 * k - 1) as f64 * x * p1 - (k - 1) as f64 * p0) / k as f64);
+                    }
+                    let dp = n as f64 * (x * p1 - p0) / (x * x - 1.0);
+                    x -= p1 / dp;
+                    if (p1 / dp).abs() < 1e-15 {
+                        break (x, 2.0 / ((1.0 - x * x) * dp * dp));
+                    }
+                }
+            })
+            .collect();
+        let mut want = 0.0;
+        for (s, ws) in &gauss {
+            let rho = 0.5 * r * (s + 1.0);
+            for (t, wt) in &gauss {
+                let angle = std::f64::consts::PI * (t + 1.0);
+                let p = base + e1 * (rho * angle.cos()) + e2 * (rho * angle.sin()) - centre;
+                let (b, c) = (p.dot(axis), p.dot(p) - big * big);
+                want += ws * wt * 0.5 * r * std::f64::consts::PI * rho * (-b + (b * b - c).sqrt());
+            }
+        }
+        let got = measure_mass(&cap).unwrap().volume;
+        assert!((got - want).abs() < 1e-6 * want, "{got} against {want}");
+    }
 }
