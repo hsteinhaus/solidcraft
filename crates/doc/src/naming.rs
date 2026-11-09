@@ -1049,6 +1049,20 @@ pub fn edge_names_at(b: &ModelBody, pts: &[Vec3]) -> Vec<String> {
         .collect()
 }
 
+/// How far `p` is from face `face` of `b`, which its mesh misses by `mesh_d`: from the face's
+/// exact surface when it is analytic. Two faces a point lies on alike (where two bodies touch)
+/// have meshes that miss it each by its own sag, so the meshes alone took a meshing gear's wall
+/// for the other's.
+pub(crate) fn exact_face_distance(b: &ModelBody, face: usize, p: Vec3, mesh_d: f64) -> f64 {
+    solidcraft_kernel::face_surface(&b.body, face).and_then(|s| s.nearest(p)).map_or(mesh_d, |q| q.dist(p))
+}
+
+/// Whether a face `d` from point `p` is nearer than one `best` from it by more than rounding: a
+/// tie keeps the first body's face.
+pub(crate) fn clearly_nearer(d: f64, best: f64, p: Vec3) -> bool {
+    d < best - 1e-9 * (1.0 + p.len())
+}
+
 /// Names of the faces holding each point (any body; empty when none does).
 pub fn face_names_at(st: &ModelState, pts: &[Vec3]) -> Vec<String> {
     pts.iter()
