@@ -2940,6 +2940,23 @@ fn a_joint_origin_at_a_vertex_follows_the_corner() {
     assert!(s.execute("joint.origin", &json!({"occurrence": "Part", "vertex": [12, 10, 30]})).is_err(), "no corner there");
 }
 
+/// A vertex origin takes only the edges that end at the corner picked, not those of a corner
+/// next to it within the pick's reach (Haube's pole over the inner shell's apex, 0.2 mm below).
+#[test]
+fn a_joint_origin_at_a_vertex_takes_only_the_edges_of_that_corner() {
+    let mut s = Session::default();
+    run(&mut s, "component.create", json!({"name": "Part"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 20, "height": 30}));
+    // two corners 0.028 mm apart
+    run(&mut s, "solid.chamfer", json!({"edges": [[10, 20, 15]], "distance": 0.02}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "joint.origin", json!({"occurrence": "Part", "vertex": [9.98, 20, 30], "name": "V"}));
+    let o = s.doc.assembly.origins.iter().find(|o| o.name == "V").map(|o| o.origin.clone()).unwrap();
+    let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), &o).unwrap();
+    let at = Vec3::new(m[3][0], m[3][1], m[3][2]);
+    assert!(at.dist(Vec3::new(9.98, 20.0, 30.0)) < 1e-9, "{at:?}");
+}
+
 /// A joint origin whose z and x come from other geometry, as Fusion's z and x axis entities: z
 /// along a straight edge, x toward a face's normal (laid square to z). Both are kept by name, so
 /// the frame turns with the edge when a parameter tilts it.
