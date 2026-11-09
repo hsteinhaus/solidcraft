@@ -26,7 +26,7 @@ mod inspect;
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("joint.origin", "Joint Origin", joint_origin).at("SOLID", "CREATE").icon("joint_origin").params(
-        "name?, occurrence?: id|name (default: from the pick, or the named face's component), sketch: name|id, point: \"<point id>\" (a sketch point of the component: z along the sketch's normal, x along its x or `x`; follows the point) | face: [x,y,z] | \"<name>\" (centre of a planar face) | circle: [x,y,z] | \"<name>\" (centre of a round end: a point on its wall or rim, the end's centre, or the round face's name as model.faces lists it) | edge: [x,y,z] (a point on an edge of a planar face: the edge's middle, z out of the face, y into it; on?: [x,y,z] a point on the face (default: the larger planar face beside the edge); corner?: [x,y,z] near one end: the corner there, x and y along its two edges into the face; found again by name, so it follows the face as it changes size; z?: [x,y,z] the frame's z instead of the face's normal, along the edge when it runs that way, x chosen from z: an edge or corner picked as it is, kept as a point where it can't be found by name) | point: [x,y,z], z?: [x,y,z]; a circle's z?: [x,y,z] (a round edge's centre with the way out of it: its end by name when that is the frame it shows, else a point there); body?: the named face's body; end?: \"<name>\" (a circle's end: the face across its rim there; default the end nearer the pick); x?: [x,y,z] (a direction, world) | \"<face name>\" | {face: [x,y,z]} (the frame's x: a direction, a plane's normal, or the way to another hole's axis; keeps a round origin's turn; a point's x is a direction, laid square to its z, default: chosen from z alone). Faces are kept by name: the origin follows its face, and a circle its end, when the design changes",
+        "name?, occurrence?: id|name (default: from the pick, or the named face's component), offset?: {x?, y?, z?, angle?, flip?} (lengths and an angle, numbers or expressions, in the origin's own frame: moved along its x, y, z, turned about z, then z flipped) on any origin; sketch: name|id, point: \"<point id>\" (a sketch point of the component: z along the sketch's normal, x along its x or `x`; follows the point) | face: [x,y,z] | \"<name>\" (centre of a planar face) | circle: [x,y,z] | \"<name>\" (centre of a round end: a point on its wall or rim, the end's centre, or the round face's name as model.faces lists it) | edge: [x,y,z] (a point on an edge of a planar face: the edge's middle, z out of the face, y into it; on?: [x,y,z] a point on the face (default: the larger planar face beside the edge); corner?: [x,y,z] near one end: the corner there, x and y along its two edges into the face; found again by name, so it follows the face as it changes size; z?: [x,y,z] the frame's z instead of the face's normal, along the edge when it runs that way, x chosen from z: an edge or corner picked as it is, kept as a point where it can't be found by name) | point: [x,y,z], z?: [x,y,z]; a circle's z?: [x,y,z] (a round edge's centre with the way out of it: its end by name when that is the frame it shows, else a point there); body?: the named face's body; end?: \"<name>\" (a circle's end: the face across its rim there; default the end nearer the pick); x?: [x,y,z] (a direction, world) | \"<face name>\" | {face: [x,y,z]} (the frame's x: a direction, a plane's normal, or the way to another hole's axis; keeps a round origin's turn; a point's x is a direction, laid square to its z, default: chosen from z alone). Faces are kept by name: the origin follows its face, and a circle its end, when the design changes",
     ),
     CommandSpec::new("joint.create", "Joint", joint).at("SOLID", "ASSEMBLE").icon("joint").key("J").params(
         "type: rigid|revolute|slider|cylindrical|pin_slot|planar|ball, or a relation: parallel|perpendicular|angle|point_on_plane|point_on_line|line_on_plane \
@@ -359,6 +359,42 @@ pub(crate) fn occurrence_at(s: &Session, p: Vec3) -> Option<u64> {
 
 /// A joint origin from parameters: a named origin, or a snap given in world coordinates.
 pub(crate) fn origin_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointOrigin> {
+    let mut o = origin_snap_param(s, v, cmd)?;
+    if let Some(given) = v.and_then(|v| v.get("offset")).filter(|o| !o.is_null()) {
+        o.snap = offset_param(s, o.snap, given, cmd)?;
+        joints::resolve_origin(&s.doc, &s.model.state(), &o).map_err(|e| bad(cmd, e.to_string()))?;
+    }
+    Ok(o)
+}
+
+/// `offset: {x?, y?, z?, angle?, flip?}`: `base` moved in its own frame (lengths and an angle,
+/// numbers or expressions, kept as given so they follow parameters).
+fn offset_param(s: &Session, base: Snap, given: &Value, cmd: &str) -> Result<Snap> {
+    let Value::Object(map) = given else { return Err(bad(cmd, "`offset` is {x?, y?, z?, angle?, flip?}")) };
+    if let Some(k) = map.keys().find(|k| !["x", "y", "z", "angle", "flip"].contains(&k.as_str())) {
+        return Err(bad(cmd, format!("`offset` has no `{k}`: it takes x, y, z, angle and flip")));
+    }
+    let part = |k: &str| -> Result<Option<String>> {
+        let Some(v) = map.get(k).filter(|v| !v.is_null()) else { return Ok(None) };
+        value(s, v, k == "angle", cmd).map_err(|e| bad(cmd, format!("`offset.{k}`: {e}")))?;
+        Ok(Some(match v {
+            Value::String(t) => t.trim().to_string(),
+            other => other.to_string(),
+        }))
+    };
+    let (x, y, z, angle) = (part("x")?, part("y")?, part("z")?, part("angle")?);
+    let flip = match map.get("flip") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(bad(cmd, "`offset.flip` is true or false")),
+    };
+    if x.is_none() && y.is_none() && z.is_none() && angle.is_none() && !flip {
+        return Ok(base);
+    }
+    Ok(Snap::Offset { snap: Box::new(base), x, y, z, angle, flip })
+}
+
+fn origin_snap_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointOrigin> {
     let v = v.ok_or_else(|| bad(cmd, "joint origins `a` and `b` are required"))?;
     if let Value::String(name) = v {
         return s
