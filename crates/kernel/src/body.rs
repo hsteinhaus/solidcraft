@@ -1324,7 +1324,7 @@ impl Body {
     pub fn faces(&self, tol: f64) -> Result<Vec<FaceInfo>> {
         let m = self.mesh(&MeshTolerance::chord(tol))?;
         let nf = self.face_count();
-        let mut acc: Vec<(f64, Vec3, Vec3, bool)> = vec![(0.0, Vec3::ZERO, Vec3::ZERO, true); nf];
+        let mut acc: Vec<(f64, Vec3, Vec3, bool, Vec3)> = vec![(0.0, Vec3::ZERO, Vec3::ZERO, true, Vec3::ZERO); nf];
         for (t, f) in m.triangles.iter().zip(&m.tri_face) {
             let Some([a, b, c]) = m.tri(t) else { continue };
             let cr = (b - a).cross(c - a);
@@ -1332,6 +1332,7 @@ impl Body {
             if let Some(slot) = acc.get_mut(*f as usize) {
                 slot.0 += ar;
                 slot.1 += (a + b + c) * (ar / 3.0);
+                slot.4 += cr;
                 if let Some(n) = cr.normalized() {
                     if slot.2 == Vec3::ZERO {
                         slot.2 = n;
@@ -1344,11 +1345,19 @@ impl Body {
         Ok(acc
             .into_iter()
             .enumerate()
-            .map(|(index, (area, c, n, planar))| FaceInfo {
+            .map(|(index, (area, c, n, planar, outward))| FaceInfo {
                 index,
                 area,
                 centroid: if area > 0.0 { c / area } else { Vec3::ZERO },
-                plane_normal: (planar && n != Vec3::ZERO && !self.curved_face(index)).then_some(n),
+                // A face on an exact plane is planar with that plane's normal, out of the body as
+                // its triangles face: in a tolerant model the triangles along its boundary lean
+                // toward edges that stand off the plane, and the face was taken for curved.
+                plane_normal: match crate::face_surface(self, index) {
+                    Some(crate::FaceSurface::Plane { normal, .. }) if outward != Vec3::ZERO => {
+                        Some(if normal.dot(outward) < 0.0 { -*normal } else { *normal })
+                    }
+                    _ => (planar && n != Vec3::ZERO && !self.curved_face(index)).then_some(n),
+                },
             })
             .collect())
     }
