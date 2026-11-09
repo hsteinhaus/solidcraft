@@ -95,6 +95,15 @@ pub enum Snap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x: Option<XRef>,
     },
+    /// The centre of a circular edge of any face (a chamfer's or a cone's rim), found again by the
+    /// edge's persistent name (`pick` is a point on it as picked): z along the circle's axis, out of
+    /// the flat face it bounds when it bounds one, x by `x`.
+    Rim {
+        pick: Vec3,
+        edge: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<XRef>,
+    },
     /// Another origin with its z and x taken from other geometry (Fusion's axis entities): z
     /// along `z`, x toward `x` laid square to z; either kept as the origin had it when not given.
     Axes {
@@ -247,6 +256,12 @@ impl Snap {
                 out.push(face);
             }
         }
+        if let Snap::Rim { edge, x, .. } = self {
+            out.push(edge);
+            if let Some(XRef::Face { face, .. }) = x {
+                out.push(face);
+            }
+        }
         if let Snap::Vertex { edges, x, .. } = self {
             out.extend(edges.iter());
             if let Some(XRef::Face { face, .. }) = x {
@@ -292,6 +307,12 @@ impl Snap {
             }
             Snap::Axial { face, x, .. } => {
                 out.push(face);
+                if let Some(XRef::Face { face, .. }) = x {
+                    out.push(face);
+                }
+            }
+            Snap::Rim { edge, x, .. } => {
+                out.push(edge);
                 if let Some(XRef::Face { face, .. }) = x {
                     out.push(face);
                 }
@@ -366,6 +387,7 @@ impl Snap {
             }
             Snap::Axial { pick, x, .. } => pick.is_finite() && x_ok(x),
             Snap::Vertex { pick, z, x, .. } => pick.is_finite() && z.is_none_or(|z| z.is_finite()) && x_ok(x),
+            Snap::Rim { pick, x, .. } => pick.is_finite() && x_ok(x),
         }
     }
 }
@@ -1016,6 +1038,11 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             let (z, x) = (dir(z, col(2))?, dir(x, col(0))?);
             frame(col(3), z, Some(x)).or_else(|| frame(col(3), z, None)).ok_or_else(bad)
         }
+        Snap::Rim { pick, edge, x } => {
+            let comp = component_of(doc, o.occurrence)?;
+            let (centre, z) = rim(doc, st, comp, *pick, edge)?;
+            frame(centre, z, face::x_axis(doc, st, comp, x.as_ref(), centre)?).ok_or_else(bad)
+        }
         Snap::Vertex { pick, edges, z, x } => {
             let comp = component_of(doc, o.occurrence)?;
             let at = vertex_point(doc, st, comp, *pick, edges)?;
@@ -1073,6 +1100,36 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
     }
 }
 
+/// The circle of the edge named `edge` on the component's bodies (the one nearest `pick`, component
+/// coordinates): its centre and axis, the axis out of a flat face beside the edge that the circle
+/// lies in, else as the circle runs. An edge that is no circle is refused.
+fn rim(doc: &Document, st: &ModelState, component: u64, pick: Vec3, edge: &str) -> Result<(Vec3, Vec3)> {
+    let mut best: Option<(f64, Vec3, Vec3)> = None;
+    for b in component_bodies(doc, st, component).into_iter().filter(|b| !b.body.is_mesh()) {
+        let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
+        let Some(inverse) = mat_inverse(&offset) else { continue };
+        let p = apply_point(&inverse, pick);
+        let Ok(hit) = crate::name_lookup::locate_edge(b, edge, p) else { continue };
+        let c = solidcraft_kernel::edge_circle(&b.body, hit.edge)
+            .ok_or_else(|| DocError::Invalid(format!("joint origin: edge `{edge}` is not circular")))?;
+        let axis = *c.axis;
+        let faces = b.joint_faces()?;
+        let flat = b
+            .mesh()
+            .edge_faces
+            .get(hit.edge)
+            .into_iter()
+            .flatten()
+            .find_map(|f| faces.get(*f as usize).and_then(|jf| jf.plane_normal).filter(|n| n.cross(axis).len() <= 1e-9 * n.len().max(1.0)));
+        let z = flat.unwrap_or(axis);
+        let d = hit.point.dist(p);
+        if best.is_none_or(|(bd, ..)| d < bd) {
+            best = Some((d, apply_point(&offset, c.center), apply_vector(&offset, z)));
+        }
+    }
+    best.map(|(_, c, z)| (c, z)).ok_or_else(|| DocError::reselect(edge))
+}
+
 /// The direction `r` gives in the coordinates of `component`.
 fn axis_dir(doc: &Document, st: &ModelState, component: u64, r: &AxisRef) -> Result<Vec3> {
     match r {
@@ -1115,6 +1172,28 @@ fn axis_dir(doc: &Document, st: &ModelState, component: u64, r: &AxisRef) -> Res
             best.map(|(_, d)| d).ok_or_else(|| DocError::reselect(name.as_str()))
         }
     }
+}
+
+/// The name of the circular edge of the component's bodies through `pick` (component
+/// coordinates): of the edges there, the nearest that is a circle or an arc of one. A pick at a
+/// vertex where a rim meets a seam takes the rim.
+pub fn circle_edge_name_at(doc: &Document, st: &ModelState, component: u64, pick: Vec3) -> Option<String> {
+    let mut best: Option<(f64, String)> = None;
+    for b in component_bodies(doc, st, component).into_iter().filter(|b| !b.body.is_mesh()) {
+        let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
+        let p = apply_point(&mat_inverse(&offset)?, pick);
+        let tol = (b.body.size() * 1e-3).max(1e-3);
+        let m = b.mesh();
+        let names = crate::naming::edge_names(b);
+        for (i, e) in m.edges.iter().enumerate() {
+            let d = e.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::MAX, f64::min);
+            let Some(name) = names.get(i).filter(|n| !n.is_empty()) else { continue };
+            if d <= tol && best.as_ref().is_none_or(|(bd, _)| d < *bd) && solidcraft_kernel::edge_circle(&b.body, i).is_some() {
+                best = Some((d, name.clone()));
+            }
+        }
+    }
+    best.map(|(_, n)| n)
 }
 
 /// The name of the edge of the component's bodies at `pick` (component coordinates).

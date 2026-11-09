@@ -163,6 +163,7 @@ fn references(doc: &Document, snap: &Snap) -> Vec<Value> {
         }
         Snap::Frame { .. } | Snap::Point { .. } | Snap::SketchPoint { .. } | Snap::Linked { .. } => {}
         Snap::Axial { face: f, .. } => out.push(with_role("face", face_ref(doc, f))),
+        Snap::Rim { edge, .. } => out.push(with_role("edge", edge_ref(doc, edge))),
         Snap::Vertex { edges, .. } => out.extend(edges.iter().map(|e| with_role("edge", edge_ref(doc, e)))),
     }
     out
