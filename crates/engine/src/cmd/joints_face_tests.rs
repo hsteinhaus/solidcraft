@@ -640,8 +640,9 @@ fn a_face_centre_on_no_flat_face_is_refused_not_moved_elsewhere() {
     let st = s.model.state();
     let top = solidcraft_doc::joints::resolve_origin(&s.doc, &st, &snap(Vec3::new(1.0, 1.0, 10.0))).unwrap();
     assert!(near(Vec3::new(top[3][0], top[3][1], top[3][2]), Vec3::new(0.0, 0.0, 10.0)), "{top:?}");
-    for p in [Vec3::new(5.0, 0.0, 5.0), Vec3::new(30.0, 0.0, 10.0)] {
-        let e = solidcraft_doc::joints::resolve_origin(&s.doc, &st, &snap(p)).unwrap_err().to_string();
+    // refused where it is made; once made, it is re-found (eval::cost_tests)
+    for p in [[5.0, 0.0, 5.0], [30.0, 0.0, 10.0]] {
+        let e = s.execute("joint.origin", &json!({"name": "Off", "face": p})).unwrap_err().to_string();
         assert!(e.contains("not planar") || e.contains("no face"), "{p:?}: {e}");
     }
 }
