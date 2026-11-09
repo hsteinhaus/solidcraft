@@ -3072,3 +3072,24 @@ fn a_components_joint_origin_serves_its_other_placements_by_name() {
     assert!(near(at(&s).0, Vec3::new(55.0, 5.0, 15.0)), "{:?}", at(&s));
     assert!(s.execute("joint.origin", &json!({"occurrence": "Part:2", "origin": "Nope"})).is_err());
 }
+
+/// A joint made suppressed places nothing, as in Fusion: its parts stay where they are. Once it
+/// is unsuppressed it places them as any joint does.
+#[test]
+fn a_joint_made_suppressed_moves_nothing_until_unsuppressed() {
+    let mut s = two_cubes();
+    let (a, b) = (occ(&s, "A"), occ(&s, "B"));
+    let corner = Vec3::new(20.0, 0.0, 0.0);
+    let r = run(
+        &mut s,
+        "joint.create",
+        json!({"type": "rigid", "name": "Held", "suppressed": true,
+               "a": {"occurrence": a, "face": [5, 5, 10]}, "b": {"occurrence": b, "face": [25, 5, 0]}}),
+    );
+    assert_eq!(r["name"], "Held", "{r}");
+    assert!(s.doc.assembly.joints.iter().any(|j| j.name == "Held" && j.suppressed));
+    assert!(near(place(&s, "B", corner), corner), "{:?}", place(&s, "B", corner));
+    run(&mut s, "joint.edit", json!({"joint": "Held", "suppressed": false}));
+    // Unsuppressed, B's bottom sits on A's top: its corner goes up to A's top face.
+    assert!(near(place(&s, "B", Vec3::new(25.0, 5.0, 0.0)), Vec3::new(5.0, 5.0, 10.0)), "{:?}", place(&s, "B", Vec3::new(25.0, 5.0, 0.0)));
+}
