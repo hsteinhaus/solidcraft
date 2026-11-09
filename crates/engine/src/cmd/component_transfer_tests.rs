@@ -623,3 +623,56 @@ fn reparent_items_keeps_hidden_placements_hidden() {
     assert_eq!(s.doc.occurrences.iter().find(|o| o.id == outer_occurrence).map(|o| o.parent), Some(dest));
     let _ = part;
 }
+
+/// A profile of another component read through the frame it was made in (`profile_frame`, the
+/// consumer-from-owner matrix the converter takes from Fusion), not the placements now: built
+/// where the same profile shifted by that frame builds in the root, after the sketch's
+/// component moves, its radius changes, and the design is reopened.
+#[test]
+fn a_pinned_profile_frame_keeps_the_frame_it_was_made_in() {
+    // row-major, as occurrence.move's matrix: a shift of 7 along y
+    let pin = json!([[1, 0, 0, 0], [0, 1, 0, 7], [0, 0, 1, 0]]);
+    let build = |kind: &str, pinned: bool| {
+        let mut s = Session::default();
+        run(&mut s, "parameters.add", json!({"name":"R","expression":"5 mm"}));
+        run(&mut s, "sketch.create", json!({"plane":"XZ","name":"P"}));
+        run(&mut s, "sketch.line", json!({"points":[[20,0],[20,-40]],"ids":["up"]}));
+        run(&mut s, "sketch.finish", json!({}));
+        let occurrence = pinned.then(|| run(&mut s, "component.create", json!({"name":"Source","grounded":false}))["occurrence"].as_u64().unwrap());
+        run(&mut s, "sketch.create", json!({"plane":"XY","name":"Profile"}));
+        let y = if pinned { 0 } else { 7 };
+        run(&mut s, "sketch.circle.center", json!({"center":[20,y],"radius":5,"id":"c"}));
+        run(&mut s, "sketch.dimension", json!({"entities":["c"],"type":"radius","value":"R"}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "component.activate", json!({"component":0}));
+        let mut p = match kind {
+            "solid.extrude" => json!({"distance":5}),
+            "solid.revolve" => json!({"axis":"y","angle":"360 deg"}),
+            _ => json!({"path_sketch":"P","path":["up"],"operation":"new"}),
+        };
+        p["sketch"] = json!("Profile");
+        p["body_name"] = json!("Part");
+        if pinned {
+            p["profile_frame"] = pin.clone();
+        }
+        run(&mut s, kind, p);
+        if let Some(o) = occurrence {
+            run(&mut s, "occurrence.move", json!({"occurrence":o,"translate":[40,0,0],"axis":[1,0,0],"angle":"30 deg"}));
+        }
+        s
+    };
+    let measure = |s: &Session| solidcraft_kernel::measure(&s.world_state().unwrap().body("Part").unwrap().body).unwrap();
+    for kind in ["solid.extrude", "solid.revolve", "solid.sweep"] {
+        let (mut s, mut r) = (build(kind, true), build(kind, false));
+        for radius in ["5 mm", "3 mm"] {
+            run(&mut s, "parameters.change", json!({"name":"R","expression":radius}));
+            run(&mut r, "parameters.change", json!({"name":"R","expression":radius}));
+            let (got, want) = (measure(&s), measure(&r));
+            assert!((got.volume - want.volume).abs() < 1e-6 * want.volume, "{kind} R {radius}: volume {} against {}", got.volume, want.volume);
+            assert!(got.centroid.dist(want.centroid) < 1e-6, "{kind} R {radius}: {:?} against {:?}", got.centroid, want.centroid);
+        }
+        let mut reopened = Session { doc: solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap().into(), ..Session::default() };
+        reopened.refresh();
+        assert!(measure(&reopened).centroid.dist(measure(&r).centroid) < 1e-6, "{kind} reopened");
+    }
+}
