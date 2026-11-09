@@ -1059,10 +1059,15 @@ impl JsonSchema for GeoRefParam {
         // form from taking an object an earlier one refuses.
         let earlier = |keys: &[&str]| json!({"anyOf": keys.iter().map(|k| json!({"required": [k]})).collect::<Vec<_>>()});
         json_schema!({
-            "description": "Geometry to build from, the first of these forms that fits: a reference as saved ({\"type\": …}, as timeline.inspect gives one back); a point in mm on a face, edge or vertex of a body ({\"face\": [x, y, z]}, {\"edge\": …} or {\"vertex\": …}), kept by its persistent name; a sketch's point or curve ({\"sketch\": id or name, \"point\" or \"curve\": its id}); a fixed point {\"point\": [x, y, z]}; a plane {\"plane\": …}; an axis {\"axis\": X, Y, Z or a construction axis's name}; a construction point {\"construct_point\": name}; or a plane's name.",
+            "description": "Geometry to build from, the first of these forms that fits: a reference as saved ({\"type\": …}, as timeline.inspect gives one back); a point in mm on a face, edge or vertex of a body ({\"face\": [x, y, z], \"body\"?}, {\"edge\": …} or {\"vertex\": …}), kept by its persistent name (\"body\", the picked body's world name, says whose face a point where bodies meet is); a sketch's point or curve ({\"sketch\": id or name, \"point\" or \"curve\": its id}); a fixed point {\"point\": [x, y, z]}; a plane {\"plane\": …}; an axis {\"axis\": X, Y, Z or a construction axis's name}; a construction point {\"construct_point\": name}; or a plane's name.",
             "anyOf": [
                 {"type": "object", "properties": {"type": {"enum": SAVED_REFS}}, "required": ["type"]},
-                picked_at("face", &point),
+                {
+                    "type": "object",
+                    "properties": {"face": point, "body": {"type": "string", "minLength": 1}},
+                    "required": ["face"],
+                    "not": {"required": ["type"]}
+                },
                 picked_at("edge", &point),
                 picked_at("vertex", &point),
                 {

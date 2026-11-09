@@ -251,9 +251,16 @@ pub(crate) fn geo_form(v: &Value) -> std::result::Result<GeoForm<'_>, GeoFormErr
 /// A reference from its JSON form.
 pub(super) fn geo(s: &Session, v: Option<&Value>, cmd: &str, what: &str) -> Result<GeoRef> {
     let v = v.ok_or_else(|| bad(cmd, format!("`{what}` is required: {REF}")))?;
+    // Named among the bodies the root's construction resolves it in: every placement of a
+    // component, not its first only (where a later placement's face is no face at all).
+    let st = if s.active_component == 0 { s.world_state()? } else { s.model.state() };
     let mut g = match geo_form(v) {
         Ok(GeoForm::Saved(g)) => g,
-        Ok(GeoForm::Face(at)) => GeoRef::Face { at, name: None },
+        // A point where bodies meet lies on a face of each: `body` says whose face was picked.
+        Ok(GeoForm::Face(at)) => match str_(v, "body") {
+            Some(body) => GeoRef::Face { at, name: Some(body_face_name(&st, body, at).map_err(|e| bad(cmd, format!("`{what}`: {e}")))?) },
+            None => GeoRef::Face { at, name: None },
+        },
         Ok(GeoForm::Edge(at)) => GeoRef::Edge { at, name: None },
         Ok(GeoForm::Vertex(at)) => GeoRef::Vertex { at, edges: None },
         Ok(GeoForm::Sketch { sketch, part }) => {
@@ -283,11 +290,14 @@ pub(super) fn geo(s: &Session, v: Option<&Value>, cmd: &str, what: &str) -> Resu
         Err(GeoFormError::Saved(e)) => return Err(bad(cmd, format!("`{what}`: {e}"))),
         Err(GeoFormError::Unknown) => return Err(bad(cmd, format!("`{what}` must be {REF}"))),
     };
-    // Named among the bodies the root's construction resolves it in: every placement of a
-    // component, not its first only (where a later placement's face is no face at all).
-    let st = if s.active_component == 0 { s.world_state()? } else { s.model.state() };
     g.name_picks(&st);
     Ok(g)
+}
+
+/// The name of the face of body `body` at `at`.
+fn body_face_name(st: &solidcraft_doc::ModelState, body: &str, at: Vec3) -> std::result::Result<String, String> {
+    let b = st.body(body).ok_or_else(|| format!("no body `{body}`"))?;
+    solidcraft_doc::naming::face_name_at_body(b, at).ok_or_else(|| format!("no face of `{body}` at {at:?}"))
 }
 
 fn t_param(s: &Session, p: &Value, cmd: &str) -> Result<solidcraft_doc::Expr> {
