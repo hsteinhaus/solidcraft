@@ -338,7 +338,8 @@ pub(crate) fn occurrence_id(s: &Session, v: Option<&Value>, cmd: &str) -> Result
 /// The occurrence whose bodies are nearest a world point (0 = root bodies).
 pub(crate) fn occurrence_at(s: &Session, p: Vec3) -> Option<u64> {
     let st = s.model.state();
-    let mut best: Option<(f64, u64)> = None;
+    // each placed body's box distance to the point (in the body's own coordinates)
+    let mut candidates: Vec<(f64, u64, &solidcraft_doc::ModelBody, Vec3)> = Vec::new();
     for b in &st.bodies {
         let comp = s.doc.model_body_component(b);
         let occs: Vec<u64> = if comp == 0 { vec![0] } else { s.doc.occurrences.iter().filter(|o| o.component == comp).map(|o| o.id).collect() };
@@ -348,10 +349,28 @@ pub(crate) fn occurrence_at(s: &Session, p: Vec3) -> Option<u64> {
             let q = solidcraft_doc::apply_point(&inv, p);
             let bb = b.mesh().bounds();
             let c = Vec3::new(q.x.clamp(bb.min.x, bb.max.x), q.y.clamp(bb.min.y, bb.max.y), q.z.clamp(bb.min.z, bb.max.z));
-            let d = c.dist(q);
-            if best.is_none_or(|(bd, _)| d < bd) {
-                best = Some((d, occ));
-            }
+            candidates.push((c.dist(q), occ, b, q));
+        }
+    }
+    let least = candidates.iter().map(|c| c.0).fold(f64::INFINITY, f64::min);
+    // Boxes holding the point alike (a part placed twice, the second inside the first's box,
+    // or a part inside another's): the body whose surface the point is nearest
+    let near = |b: &solidcraft_doc::ModelBody, q: Vec3| {
+        let mesh = b.mesh();
+        mesh.triangles
+            .iter()
+            .filter_map(|t| mesh.tri(t))
+            .map(|[x, y, z]| solidcraft_geom::compare::closest_on_triangle(q, x, y, z).dist(q))
+            .fold(f64::INFINITY, f64::min)
+    };
+    let mut best: Option<(f64, u64)> = None;
+    for &(d, occ, b, q) in &candidates {
+        if d > least {
+            continue;
+        }
+        let surface = near(b, q);
+        if best.is_none_or(|(bd, _)| surface < bd) {
+            best = Some((surface, occ));
         }
     }
     best.map(|(_, o)| o)
