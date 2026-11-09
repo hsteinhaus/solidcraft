@@ -1010,6 +1010,41 @@ fn plane_at(doc: &Document, st: &ModelState, o: &JointOrigin, pick: Vec3) -> Res
     Ok((apply_point(&offset, c), apply_vector(&offset, n)))
 }
 
+/// The centre and outward normal of the planar face nearest `pick`, for a face origin re-found
+/// whose pick no longer lies on a face (its body replaced or moved): by distance to the face's
+/// plane, then to its centroid (component coordinates; a body moved in by its offset).
+fn nearest_plane(doc: &Document, st: &ModelState, o: &JointOrigin, pick: Vec3) -> Result<(Vec3, Vec3)> {
+    let comp = component_of(doc, o.occurrence)?;
+    let mut best: Option<(f64, &crate::ModelBody, solidcraft_kernel::FaceInfo, Vec3)> = None;
+    for b in component_bodies(doc, st, comp).into_iter().filter(|b| !b.body.is_mesh()) {
+        let offset = doc.model_body_offset(b);
+        for f in b.joint_faces()?.iter() {
+            let Some(own) = f.plane_normal else { continue };
+            let (c, n) = match offset {
+                Some(m) => (apply_point(m, f.centroid), apply_vector(m, own)),
+                None => (f.centroid, own),
+            };
+            let d = (pick - c).dot(n).abs() + 1e-3 * (pick - c).len();
+            if best.as_ref().is_none_or(|(bd, ..)| d < *bd) {
+                best = Some((d, b, f.clone(), own));
+            }
+        }
+    }
+    let (_, b, f, n) = best.ok_or_else(|| DocError::Invalid("joint origin: no planar face there".into()))?;
+    let c = face::planar_centre(b, f.index, f.centroid, n);
+    let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
+    Ok((apply_point(&offset, c), apply_vector(&offset, n)))
+}
+
+/// Refuse a new face-centre origin whose pick lies on no flat face of its component (checked
+/// where it is made; once made, it is re-found as its face is replaced or moved).
+pub fn check_face_pick(doc: &Document, st: &ModelState, o: &JointOrigin) -> Result<()> {
+    match &o.snap {
+        Snap::FaceCenter { pick, .. } => plane_at(doc, st, o, *pick).map(|_| ()),
+        _ => Ok(()),
+    }
+}
+
 /// Resolve a joint origin to a frame in its component's coordinates.
 pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Result<Mat> {
     let bad = || DocError::Invalid("joint origin: degenerate frame".into());
@@ -1026,7 +1061,14 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             };
             let (c, n) = match named.as_ref().map(face::NamedFace::plane).transpose()?.flatten() {
                 Some(cn) => cn,
-                None => plane_at(doc, st, o, named.as_ref().map_or(*pick, |f| f.point))?,
+                None => {
+                    let at = named.as_ref().map_or(*pick, |f| f.point);
+                    // the flat face the point lies on; one no longer under it, the nearest
+                    match plane_at(doc, st, o, at) {
+                        Ok(cn) => cn,
+                        Err(_) => nearest_plane(doc, st, o, at)?,
+                    }
+                }
             };
             frame(c, n, face::x_axis(doc, st, comp, x.as_ref(), c)?).ok_or_else(bad)
         }
