@@ -175,6 +175,11 @@ pub struct ExtrudeParams {
     /// With `thin` and `side: two_sides`: the thickness outside.
     #[serde(default)]
     pub thickness2: Option<LengthExpr>,
+    /// A profile of another component read through this frame, pinned as it was made: a rigid
+    /// row-major matrix (as occurrence.move's `matrix`) taking the sketch's component coordinates
+    /// into this feature's, instead of their placements now.
+    #[serde(default)]
+    pub profile_frame: Option<serde_json::Value>,
 }
 
 /// Something a feature's result tells the user without stopping them, with an action to take.
