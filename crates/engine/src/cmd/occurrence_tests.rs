@@ -1853,3 +1853,41 @@ fn a_body_seen_in_another_placement_pastes_into_another_design_under_its_own_nam
     let is = s.world_state().unwrap().body("Cube").unwrap().mesh().bounds();
     assert!(was.min.dist(is.min) < 1e-6 && was.max.dist(is.max) < 1e-6, "{was:?} vs {is:?}");
 }
+
+/// A sketch on a face of a linked design stays on that face when the design is edited elsewhere
+/// and saved again (Akku 6s6p's plate on a spacer of Akku 3s6p): the face's import certificate
+/// names a file content that is gone, and the face is found again by its name; the features
+/// on the sketch build as before, and Update Links says if one fails.
+#[test]
+fn a_sketch_on_a_linked_face_stays_on_it_when_the_design_is_saved_again() {
+    let dir = std::env::temp_dir().join(format!("solidcraft-linked-anchor-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let part = dir.join("plate.solidcraft");
+    saved_box_design(&part, 30.0);
+    let mut s = Session::default();
+    run(&mut s, INSERT_DESIGN, json!({"path": part, "translate": [50, 0, 0]}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "sketch.create", json!({"plane": {"face": [55, 10, 30]}, "name": "OnTop", "project_edges": false}));
+    let solidcraft_doc::FeatureKind::Sketch { plane, .. } = &s.doc.find_feature("OnTop").unwrap().kind else { panic!() };
+    let anchored = serde_json::to_string(plane).unwrap();
+    assert!(anchored.contains("\"imported\""), "the sketch is anchored by an import certificate: {anchored}");
+    let local = match plane {
+        solidcraft_doc::PlaneRef::Face { plane, .. } => plane.to_local(solidcore_record::Vec3::new(55.0, 10.0, 30.0)),
+        _ => panic!(),
+    };
+    run(&mut s, "sketch.circle.center", json!({"center": [local.x, local.y], "radius": 2}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "OnTop", "distance": 5, "operation": "new", "body_name": "Boss"}));
+    // The part edited away from that face and saved again.
+    let mut edit = Session::default();
+    run(&mut edit, "solid.box", json!({"length": 10, "width": 20, "height": 30, "body_name": "Plate"}));
+    run(&mut edit, "solid.box", json!({"corner": [100, 0, 0], "length": 5, "width": 5, "height": 5, "body_name": "Other"}));
+    run(&mut edit, "file.save", json!({"path": part}));
+    let updated = run(&mut s, UPDATE_LINKS, json!({}));
+    let _ = std::fs::remove_dir_all(&dir);
+    for r in &s.model.results {
+        assert!(r.error.is_none(), "{}: {:?} ({updated})", r.name, r.error);
+    }
+    let boss = solidcraft_kernel::measure(&s.world_state().unwrap().body("Boss").unwrap().body).unwrap();
+    assert!((boss.centroid.z - 32.5).abs() < 1e-6, "{boss:?}");
+}
