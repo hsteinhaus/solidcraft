@@ -367,11 +367,41 @@ fn a_round_origin_keeps_its_end_when_the_face_it_opens_onto_gets_other_neighbour
     assert!((z - 4.0).abs() < 1e-9 && (dz - 1.0).abs() < 1e-9, "{z} {dz}");
 }
 
+/// A face-centre origin is where Fusion puts a planar face's centre key point: the middle of the
+/// box of its edges' NURBS control points (all loops). Fusion's own plate (a motor mount): lines,
+/// r3 corners and a 70.86° r17.25 arc whose middle control point, where its end tangents meet,
+/// lies 3.92 below the plate's lowest edge point, and holes. Neither its area centroid (y 17.52)
+/// nor its outline's centre (17.47) nor its outline's box (17.25): y 15.28988.
+#[test]
+fn a_face_centre_is_the_middle_of_its_edges_control_point_box() {
+    let mut s = Session::default();
+    let (r, c) = (17.25_f64, 17.25_f64);
+    let y0 = c - (r * r - 100.0).sqrt();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Plate"}));
+    run(&mut s, "sketch.line", json!({"points": [[0, y0], [0, 31.5]]}));
+    run(&mut s, "sketch.arc.center_point", json!({"center": [3, 31.5], "start": [3, 34.5], "end": [0, 31.5]}));
+    run(&mut s, "sketch.line", json!({"points": [[3, 34.5], [17, 34.5]]}));
+    run(&mut s, "sketch.arc.center_point", json!({"center": [17, 31.5], "start": [20, 31.5], "end": [17, 34.5]}));
+    run(&mut s, "sketch.line", json!({"points": [[20, 31.5], [20, y0]]}));
+    run(&mut s, "sketch.arc.center_point", json!({"center": [10, c], "start": [0, y0], "end": [20, y0]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "Plate", "distance": 1.5, "operation": "new"}));
+    for (x, y, rad) in [(10.0, c, 5.0), (5.0, 28.0, 1.55), (15.0, 28.0, 1.55)] {
+        run(&mut s, "solid.cylinder", json!({"base": [x, y, -1], "radius": rad, "height": 5, "operation": "cut"}));
+    }
+    run(&mut s, "joint.origin", json!({"occurrence": 0, "face": [10, 25, 1.5], "name": "C"}));
+    let half = (10.0 / r).asin();
+    let want = Vec3::new(10.0, 0.5 * (34.5 + c - r / half.cos()), 1.5);
+    assert!((want.y - 15.28988).abs() < 1e-5, "{want:?}");
+    let (at, z) = origin_frame(&s, "C").unwrap();
+    assert!(at.dist(want) < 1e-9 && near(z, Vec3::Z), "{at:?} against {want:?}");
+}
+
 #[test]
 fn a_face_centre_stays_put_when_a_hole_in_its_face_moves_or_goes() {
     // A 200 x 100 plate with a 20 mm hole at `HX` in its top face, and an origin at the top
-    // face's centre, by the face's name and by a point alone. Moving the hole or suppressing it
-    // changes the face's area, not its outline: the origin stays at the outline's middle.
+    // face's centre, by the face's name and by a point alone. The hole's control points lie
+    // inside the box of the outline's: moving the hole or suppressing it leaves the centre.
     let mut s = Session::default();
     run(&mut s, "parameters.change", json!({"name": "HX", "expression": "60 mm"}));
     run(&mut s, "component.create", json!({"name": "Plate"}));
