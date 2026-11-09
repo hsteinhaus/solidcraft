@@ -1965,6 +1965,9 @@ fn redefine(s: &mut Session, p: &Value) -> Result<Value> {
         if params.get("participants").is_some() {
             slot.participants = new.participants;
         }
+        if params.get("profile_frame").is_some() {
+            slot.profile_frame = new.profile_frame;
+        }
     }
     // New optional inputs need model parameter names, while existing dimensions keep theirs.
     trial.doc_mut().name_feature_inputs(id);

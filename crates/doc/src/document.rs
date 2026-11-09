@@ -3026,6 +3026,11 @@ pub struct Feature {
     /// default), or every piece stays one body.
     #[serde(default, skip_serializing_if = "Touching::is_separate")]
     pub touching: Touching,
+    /// The frame a profile (or swept profile) of another component is read through, pinned as
+    /// it was made: the feature's component from the sketch's (`crate::Mat`), instead of their
+    /// placements now (or a recorded body transfer's). `None` reads the placements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_frame: Option<crate::Mat>,
     #[serde(flatten)]
     pub kind: FeatureKind,
 }
@@ -4114,6 +4119,7 @@ impl Document {
             inserted: false,
             link_faces: Vec::new(),
             touching: Touching::Separate,
+            profile_frame: None,
             kind,
         };
         self.place_feature(f);

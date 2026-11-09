@@ -1788,7 +1788,11 @@ fn placement_digest(doc: &Document, f: &Feature, st: Option<&ModelState>) -> u64
             reads.sketch(doc, sketch);
             // A later transfer can preserve this profile's historical frame. Changes to that
             // boundary (including suppression and rollback) must invalidate the constructor.
-            if let Some(relative) = crate::body_transfer::profile_frame(doc, f, sketch) {
+            if let Some(pinned) = &f.profile_frame {
+                "pinned profile".hash(&mut h);
+                sketch.hash(&mut h);
+                hash_placement(pinned, &mut h);
+            } else if let Some(relative) = crate::body_transfer::profile_frame(doc, f, sketch) {
                 "transferred profile".hash(&mut h);
                 sketch.hash(&mut h);
                 hash_placement(&relative, &mut h);
@@ -5767,7 +5771,10 @@ fn feature_tools_with_constructor(
             let ps =
                 st.sketch(path_sketch.0).ok_or_else(|| DocError::Unknown(format!("sketch {path_sketch} (it must come earlier in the timeline)")))?;
             let profile;
-            let ss = if !ps.sketch.wires.is_empty() {
+            let ss = if let Some(pinned) = pinned_profile(doc, ss, f) {
+                profile = pinned?;
+                &profile
+            } else if !ps.sketch.wires.is_empty() {
                 profile = profile_in_frame(doc, ss, f.component)?;
                 &profile
             } else {
@@ -5957,10 +5964,20 @@ fn sketch_in_feature_frame(doc: &Document, sketch: &SolvedSketch, consumer: u64)
 }
 
 fn constructor_profile_in_frame(doc: &Document, sketch: &SolvedSketch, feature: &Feature) -> Result<SolvedSketch> {
+    if let Some(pinned) = pinned_profile(doc, sketch, feature) {
+        return pinned;
+    }
     match crate::body_transfer::profile_frame(doc, feature, sketch.feature) {
         Some(relative) => profile_with_transform(sketch, &relative),
         None => sketch_in_feature_frame(doc, sketch, feature.component),
     }
+}
+
+/// A profile of another component through the frame `feature` pinned it in (`Feature::profile_frame`).
+fn pinned_profile(doc: &Document, sketch: &SolvedSketch, feature: &Feature) -> Option<Result<SolvedSketch>> {
+    let owner = doc.feature(sketch.feature).map(|f| f.component).unwrap_or(0);
+    let pinned = feature.profile_frame.as_ref().filter(|_| owner != feature.component)?;
+    Some(profile_with_transform(sketch, pinned))
 }
 
 fn profile_in_frame(doc: &Document, sketch: &SolvedSketch, consumer: u64) -> Result<SolvedSketch> {

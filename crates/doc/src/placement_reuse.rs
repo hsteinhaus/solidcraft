@@ -218,6 +218,7 @@ fn same_feature(a: &Feature, b: &Feature) -> bool {
         kernel_piece_order,
         inserted,
         link_faces,
+        profile_frame,
         kind,
     } = a;
     *id == b.id
@@ -235,6 +236,7 @@ fn same_feature(a: &Feature, b: &Feature) -> bool {
         && *kernel_piece_order == b.kernel_piece_order
         && *inserted == b.inserted
         && *link_faces == b.link_faces
+        && *profile_frame == b.profile_frame
         && match (kind, &b.kind) {
             (FeatureKind::MeshImport { file: a, meshes }, FeatureKind::MeshImport { file: b, meshes: other }) => {
                 a == b
