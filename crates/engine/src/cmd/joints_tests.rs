@@ -3045,3 +3045,28 @@ fn a_joint_origins_axes_follow_a_construction_plane_and_origin_axes() {
     check(&Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap()), 20.0);
     assert!(s.execute("joint.origin", &json!({"occurrence": 0, "point": [0, 0, 0], "z_axis": {"plane": "Nope"}})).is_err());
 }
+
+/// A component's joint origin serves each of its placements, as in Fusion: another placement
+/// names it by its own placement and the origin's name, and it is there on that placement,
+/// following the origin's geometry.
+#[test]
+fn a_components_joint_origin_serves_its_other_placements_by_name() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name": "h", "expression": "10 mm"}));
+    run(&mut s, "component.create", json!({"name": "Part"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": "h"}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "occurrence.copy", json!({"component": "Part", "translate": [50, 0, 0]}));
+    run(&mut s, "joint.origin", json!({"occurrence": "Part:1", "face": [5, 5, 10], "name": "Top"}));
+    run(&mut s, "joint.origin", json!({"occurrence": "Part:2", "origin": "Top", "name": "Top2"}));
+    let at = |s: &Session| {
+        let o = s.doc.assembly.origins.iter().find(|o| o.name == "Top2").map(|o| o.origin.clone()).unwrap();
+        let m = s.doc.origin_world(&s.model.state(), &o).unwrap();
+        (Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(m[2][0], m[2][1], m[2][2]))
+    };
+    let (p, z) = at(&s);
+    assert!(near(p, Vec3::new(55.0, 5.0, 10.0)) && near(z, Vec3::Z), "{p:?} {z:?}");
+    run(&mut s, "parameters.change", json!({"name": "h", "expression": "15 mm"}));
+    assert!(near(at(&s).0, Vec3::new(55.0, 5.0, 15.0)), "{:?}", at(&s));
+    assert!(s.execute("joint.origin", &json!({"occurrence": "Part:2", "origin": "Nope"})).is_err());
+}
