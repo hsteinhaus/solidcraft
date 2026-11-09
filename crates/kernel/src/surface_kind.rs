@@ -69,19 +69,15 @@ pub(crate) fn surface_of(b: &Brep, face: usize) -> Option<FaceSurface> {
 /// point where the end tangents meet; a spline by its own control points. `None` for a face not
 /// on a plane, a mesh body, or an edge none of these covers.
 pub fn face_control_box_centre(b: &Body, face: usize) -> Option<Vec3> {
-    use solidcore_record::brep::Loop;
+    use solidcore_record::brep::{Loop, Surface};
     if b.is_mesh() {
         return None;
     }
     let Some(FaceSurface::Plane { normal, point }) = face_surface(b, face) else { return None };
     let record = b.record();
     let f = record.faces.get(face)?;
-    let (mut lo, mut hi) =
-        (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
-    let mut take = |p: Vec3| {
-        lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
-        hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
-    };
+    let mut pts = Vec::new();
+    let mut take = |p: Vec3| pts.push(p);
     for l in &f.loops {
         let Loop::Edges { edges } = l else { continue };
         for oe in edges {
@@ -115,10 +111,44 @@ pub fn face_control_box_centre(b: &Body, face: usize) -> Option<Vec3> {
             }
         }
     }
-    if !(lo.x <= hi.x) {
+    if pts.is_empty() {
         return None;
     }
-    let mid = (lo + hi) * 0.5;
+    // the box in the plane surface's own (u, v) parameters (Fusion's), else in world axes
+    let v3 = |a: &[f64; 3]| Vec3::new(a[0], a[1], a[2]);
+    let uv = match &f.surface {
+        Surface::Plane { origin, u_axis, v_axis } => Some((v3(origin), v3(u_axis), v3(v_axis))),
+        Surface::PlaneThrough { origin, u_point, v_point } => Some((v3(origin), v3(u_point) - v3(origin), v3(v_point) - v3(origin))),
+        _ => None,
+    };
+    let mid = match uv {
+        Some((o, a, c)) => {
+            // p - o = u a + v c, solved through the Gram matrix (axes need not be orthogonal)
+            let (aa, ac, cc) = (a.dot(a), a.dot(c), c.dot(c));
+            let det = aa * cc - ac * ac;
+            if !(det.abs() > 1e-300) {
+                return None;
+            }
+            let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+            for p in &pts {
+                let (pa, pc) = ((*p - o).dot(a), (*p - o).dot(c));
+                let q = [(cc * pa - ac * pc) / det, (aa * pc - ac * pa) / det];
+                for k in 0..2 {
+                    lo[k] = lo[k].min(q[k]);
+                    hi[k] = hi[k].max(q[k]);
+                }
+            }
+            o + a * (0.5 * (lo[0] + hi[0])) + c * (0.5 * (lo[1] + hi[1]))
+        }
+        None => {
+            let (mut lo, mut hi) = (pts[0], pts[0]);
+            for p in &pts {
+                lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+                hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+            }
+            (lo + hi) * 0.5
+        }
+    };
     Some(mid - *normal * (mid - point).dot(*normal))
 }
 
