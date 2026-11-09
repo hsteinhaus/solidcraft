@@ -943,3 +943,16 @@ fn midplane_on_a_later_placement_of_a_linked_design() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A pick on a box's side beside a long rod whose round side passes 0.5 mm away, within the
+/// rod's naming tolerance (its size is a metre): the face named is the nearest, the box's.
+#[test]
+fn a_face_pick_is_named_from_the_nearest_face() {
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"base": [15.5, 5, -495], "radius": 5, "height": 1000, "body_name": "Rod"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "operation": "new", "body_name": "Box"}));
+    run(&mut s, "construct.plane.midplane", json!({"a": {"face": [10, 5, 5]}, "b": {"face": [0, 5, 5]}, "name": "M"}));
+    let m = plane(&s, "M");
+    assert!(parallel(m.normal(), Vec3::X) && on_plane(&m, Vec3::new(5.0, 0.0, 0.0)), "{m:?}");
+}
+
