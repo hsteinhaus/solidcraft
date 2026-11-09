@@ -3111,3 +3111,27 @@ fn a_circle_on_the_second_placement_of_a_part_is_that_placements() {
     assert!(near(Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(0.0, 0.0, 3.0)), "{o:?} {m:?}");
     assert!((m[2][2].abs() - 1.0).abs() < 1e-9, "{m:?}");
 }
+
+/// An origin's `x` along its z leaves its turn to chance: a round end's, a face's or a round
+/// face's origin given one is refused, as a point origin is, not given a default x (Rahmenrohr's
+/// Rigid 13 took one, and its angle turned from where Fusion's did).
+#[test]
+fn an_origin_x_along_its_z_is_refused() {
+    let mut s = Session::default();
+    run(&mut s, "component.create", json!({"name": "Pin", "grounded": false}));
+    run(&mut s, "solid.cylinder", json!({"base": [0, 0, 0], "axis": [0, 0, 1], "radius": 2, "height": 10, "operation": "new"}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    for (pick, along) in [
+        (json!({"circle": [2, 0, 10]}), [0.0, 0.0, 1.0]),
+        (json!({"face": [0, 0, 10]}), [0.0, 0.0, -1.0]),
+        (json!({"cylinder": [2, 0, 5], "at": "middle"}), [0.0, 0.0, 1.0]),
+    ] {
+        let mut given = pick.clone();
+        given["occurrence"] = json!("Pin");
+        given["x"] = json!(along);
+        let e = s.execute("joint.origin", &given).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(e.contains("off its z axis"), "{given}: {e}");
+        given["x"] = json!([1, 0, 0]);
+        run(&mut s, "joint.origin", given);
+    }
+}
