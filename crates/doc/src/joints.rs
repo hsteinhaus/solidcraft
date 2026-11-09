@@ -95,6 +95,15 @@ pub enum Snap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x: Option<XRef>,
     },
+    /// Another origin with its z and x taken from other geometry (Fusion's axis entities): z
+    /// along `z`, x toward `x` laid square to z; either kept as the origin had it when not given.
+    Axes {
+        snap: Box<Snap>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        z: Option<AxisRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<AxisRef>,
+    },
     /// A vertex of the component's bodies, found again by the persistent names of the edges that
     /// meet there (`pick` is where it was picked): z along `z` (default +Z), x by `x`.
     Vertex {
@@ -144,6 +153,21 @@ pub enum Snap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x: Option<Vec3>,
     },
+}
+
+/// A direction an origin's axis takes from other geometry ([`Snap::Axes`]), found again by name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AxisRef {
+    /// A straight edge of the component, along it from its start to its end; `pick` is a point
+    /// on it as it was picked (component coordinates).
+    Edge { edge: String, pick: Vec3 },
+    /// A face of the component: a plane's outward normal, a round face's axis.
+    Face { face: String, pick: Vec3 },
+    /// A construction axis, by name.
+    Axis { axis: String },
+    /// A direction (component coordinates).
+    Dir(Vec3),
 }
 
 /// Where along a round face's axis an [`Snap::Axial`] origin sits.
@@ -198,6 +222,15 @@ impl Snap {
         if let Snap::Offset { snap, .. } = self {
             return snap.face_names();
         }
+        if let Snap::Axes { snap, z, x } = self {
+            let mut out = snap.face_names();
+            for r in [z, x].into_iter().flatten() {
+                if let AxisRef::Edge { edge: n, .. } | AxisRef::Face { face: n, .. } = r {
+                    out.push(n);
+                }
+            }
+            return out;
+        }
         let mut out = Vec::new();
         if let Snap::FaceCenter { face, x, .. } | Snap::CircleCenter { face, x, .. } = self {
             out.extend(face.iter());
@@ -249,6 +282,14 @@ impl Snap {
             Snap::Edge { edge, face, corner, .. } => out.extend(edge.iter_mut().chain(face.iter_mut()).chain(corner.iter_mut())),
             Snap::SketchPoint { x: Some(XRef::Face { face, .. }), .. } => out.push(face),
             Snap::Offset { snap, .. } => return snap.face_names_mut(),
+            Snap::Axes { snap, z, x } => {
+                out.extend(snap.face_names_mut());
+                for r in [z, x].into_iter().flatten() {
+                    if let AxisRef::Edge { edge: n, .. } | AxisRef::Face { face: n, .. } = r {
+                        out.push(n);
+                    }
+                }
+            }
             Snap::Axial { face, x, .. } => {
                 out.push(face);
                 if let Some(XRef::Face { face, .. }) = x {
@@ -295,6 +336,7 @@ impl Snap {
                 out.extend(snap.exprs_mut());
                 out
             }
+            Snap::Axes { snap, .. } => snap.exprs_mut(),
             _ => Vec::new(),
         }
     }
@@ -314,6 +356,14 @@ impl Snap {
             Snap::SketchPoint { x, .. } => x_ok(x),
             Snap::Offset { snap, .. } => snap.is_finite(),
             Snap::Linked { .. } => true,
+            Snap::Axes { snap, z, x } => {
+                let ok = |r: &Option<AxisRef>| match r {
+                    Some(AxisRef::Edge { pick, .. } | AxisRef::Face { pick, .. }) => pick.is_finite(),
+                    Some(AxisRef::Dir(d)) => d.is_finite(),
+                    _ => true,
+                };
+                snap.is_finite() && ok(z) && ok(x)
+            }
             Snap::Axial { pick, x, .. } => pick.is_finite() && x_ok(x),
             Snap::Vertex { pick, z, x, .. } => pick.is_finite() && z.is_none_or(|z| z.is_finite()) && x_ok(x),
         }
@@ -958,6 +1008,14 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             frame(c, n, face::x_axis(doc, st, comp, x.as_ref(), c)?).ok_or_else(bad)
         }
         Snap::Edge { .. } => edge::edge_frame(doc, st, component_of(doc, o.occurrence)?, &o.snap),
+        Snap::Axes { snap, z, x } => {
+            let m = resolve_origin(doc, st, &JointOrigin { occurrence: o.occurrence, snap: (**snap).clone() })?;
+            let col = |i: usize| Vec3::new(m[i][0], m[i][1], m[i][2]);
+            let comp = component_of(doc, o.occurrence)?;
+            let dir = |r: &Option<AxisRef>, own: Vec3| r.as_ref().map_or(Ok(own), |r| axis_dir(doc, st, comp, r));
+            let (z, x) = (dir(z, col(2))?, dir(x, col(0))?);
+            frame(col(3), z, Some(x)).or_else(|| frame(col(3), z, None)).ok_or_else(bad)
+        }
         Snap::Vertex { pick, edges, z, x } => {
             let comp = component_of(doc, o.occurrence)?;
             let at = vertex_point(doc, st, comp, *pick, edges)?;
@@ -1013,6 +1071,63 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             frame(r.centre, r.z, face::x_axis(doc, st, component_of(doc, o.occurrence)?, x.as_ref(), r.centre)?).ok_or_else(bad)
         }
     }
+}
+
+/// The direction `r` gives in the coordinates of `component`.
+fn axis_dir(doc: &Document, st: &ModelState, component: u64, r: &AxisRef) -> Result<Vec3> {
+    match r {
+        AxisRef::Dir(d) => Ok(*d),
+        AxisRef::Axis { axis } => match st.construct.iter().find(|c| c.name == *axis).map(|c| &c.geom) {
+            Some(crate::construct::ConstructGeom::Axis { dir, .. }) => Ok(*dir),
+            _ => Err(DocError::Unknown(format!("joint origin: construction axis `{axis}`"))),
+        },
+        AxisRef::Face { face: name, pick } => {
+            let nf = face::named_face(doc, st, component, *pick, name)?;
+            if let Some((_, n)) = nf.plane()? {
+                Ok(n)
+            } else if let Some(c) = nf.cylinder() {
+                Ok(*c.axis)
+            } else {
+                Err(DocError::Invalid(format!("joint origin: face `{name}` is neither flat nor round")))
+            }
+        }
+        AxisRef::Edge { edge: name, pick } => {
+            let mut best: Option<(f64, Vec3)> = None;
+            for b in component_bodies(doc, st, component).into_iter().filter(|b| !b.body.is_mesh()) {
+                let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
+                let Some(inverse) = mat_inverse(&offset) else { continue };
+                let p = apply_point(&inverse, *pick);
+                let Ok(hit) = crate::name_lookup::locate_edge(b, name, p) else { continue };
+                let m = b.mesh();
+                let Some(pts) = m.edges.get(hit.edge) else { continue };
+                let (Some(a), Some(e)) = (pts.first(), pts.last()) else { continue };
+                // Straight: every point of it on the line through its ends.
+                let along = *e - *a;
+                let straight = along.len() > 1e-9 && pts.iter().all(|q| (*q - *a).cross(along).len() <= 1e-6 * along.len() * (1.0 + along.len()));
+                if !straight {
+                    return Err(DocError::Invalid(format!("joint origin: edge `{name}` is not straight")));
+                }
+                let d = hit.point.dist(p);
+                if best.is_none_or(|(bd, _)| d < bd) {
+                    best = Some((d, apply_vector(&offset, along)));
+                }
+            }
+            best.map(|(_, d)| d).ok_or_else(|| DocError::reselect(name.as_str()))
+        }
+    }
+}
+
+/// The name of the edge of the component's bodies at `pick` (component coordinates).
+pub fn edge_name_at(doc: &Document, st: &ModelState, component: u64, pick: Vec3) -> Option<String> {
+    for b in component_bodies(doc, st, component).into_iter().filter(|b| !b.body.is_mesh()) {
+        let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
+        let p = apply_point(&mat_inverse(&offset)?, pick);
+        let tol = (b.body.size() * 1e-3).max(1e-3);
+        if b.body.nearest_edge(p, tol).ok().flatten().is_some_and(|(_, d)| d <= tol) {
+            return crate::naming::edge_names_at(b, &[p]).into_iter().next().filter(|n| !n.is_empty());
+        }
+    }
+    None
 }
 
 /// The names of the edges of the component's bodies that meet at the vertex at `pick` (component
