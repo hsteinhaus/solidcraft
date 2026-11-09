@@ -122,6 +122,46 @@ pub fn face_control_box_centre(b: &Body, face: usize) -> Option<Vec3> {
     Some(mid - *normal * (mid - point).dot(*normal))
 }
 
+/// Whether point `p` lies in the plane of planar face `face` of `b` (within `tol`) and inside the
+/// area its outer loop encloses (in a hole of the face too: the centre of a ring). From the loop's
+/// exact curves, sampled finely. `None` for a face not on a plane or a curve that doesn't evaluate.
+pub fn planar_face_outline_contains(b: &Body, face: usize, p: Vec3, tol: f64) -> Option<bool> {
+    use solidcore_record::brep::Loop;
+    if b.is_mesh() {
+        return None;
+    }
+    let Some(FaceSurface::Plane { normal, point }) = face_surface(b, face) else { return None };
+    let n = *normal;
+    if (p - point).dot(n).abs() > tol {
+        return Some(false);
+    }
+    let seed = if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+    let u = (seed - n * seed.dot(n)).normalized()?;
+    let v = n.cross(u);
+    let record = b.record();
+    let Some(Loop::Edges { edges }) = record.faces.get(face)?.loops.first() else { return None };
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    for oe in edges {
+        let e = record.edges.get(oe.edge as usize)?;
+        let c = CurveEval::new(e.parameters()).ok()?;
+        let [t0, t1] = e.interval;
+        const N: usize = 256;
+        for k in 0..N {
+            let f = k as f64 / N as f64;
+            let t = if oe.forward { t0 + (t1 - t0) * f } else { t1 - (t1 - t0) * f };
+            let q = c.point(t)? - p;
+            pts.push((q.dot(u), q.dot(v)));
+        }
+    }
+    // Winding number of the loop about p (at the origin of the plane coordinates).
+    let mut turn = 0.0;
+    for i in 0..pts.len() {
+        let (a, c) = (pts[i], pts[(i + 1) % pts.len()]);
+        turn += (a.0 * c.1 - a.1 * c.0).atan2(a.0 * c.0 + a.1 * c.1);
+    }
+    Some(turn.abs() > std::f64::consts::PI)
+}
+
 /// The circle (or arc of one) an edge's curve lies on, from its exact curve.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EdgeCircle {

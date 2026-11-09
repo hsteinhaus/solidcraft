@@ -1002,6 +1002,28 @@ fn plane_at(doc: &Document, st: &ModelState, o: &JointOrigin, pick: Vec3) -> Res
             best = Some((d, b, f));
         }
     }
+    // A point on no face: the flat face whose outer loop encloses it in its plane (a ring's centre
+    // lies in its hole), when exactly one does.
+    let best = match best {
+        Some(hit) => Some(hit),
+        None => {
+            let mut around = component_bodies(doc, st, comp).into_iter().filter(|b| !b.body.is_mesh()).flat_map(|b| {
+                let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
+                let p = mat_inverse(&offset).map(|m| apply_point(&m, pick));
+                let tol = (b.body.size() * 1e-3).max(1e-3);
+                (0..b.body.face_count())
+                    .filter(move |f| p.is_some_and(|p| solidcraft_kernel::planar_face_outline_contains(&b.body, *f, p, tol) == Some(true)))
+                    .map(move |f| (0.0, b, f))
+            });
+            match (around.next(), around.next()) {
+                (Some(one), None) => Some(one),
+                (Some(_), Some(_)) => {
+                    return Err(DocError::Invalid(format!("joint origin: several flat faces enclose {pick:?}; pick the face itself")));
+                }
+                _ => None,
+            }
+        }
+    };
     let (_, b, f) = best.ok_or_else(|| DocError::Invalid(format!("joint origin: no face at {pick:?}")))?;
     let info = b.joint_faces()?.get(f).cloned().ok_or_else(|| DocError::Invalid("joint origin: face".into()))?;
     let n = info.plane_normal.ok_or_else(|| DocError::Invalid(format!("joint origin: the face at {pick:?} is not planar")))?;
