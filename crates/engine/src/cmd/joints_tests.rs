@@ -2831,3 +2831,51 @@ fn a_joint_origin_offset_follows_its_parameters() {
     wrong["offset"] = json!({"x": "nope_param"});
     assert!(s.execute("joint.origin", &wrong).is_err());
 }
+
+/// Joint origins a linked design defines are the assembly's to join to, as Fusion's are: named by
+/// the placement and the origin, kept by that name, so they follow the design when its link is
+/// read again; `joint.list` shows them.
+#[test]
+fn joint_origins_of_a_linked_design_are_usable_by_name() {
+    let dir = std::env::temp_dir().join(format!("solidcraft-joints-{}-linked-origins", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("motor.solidcraft");
+    let save_part = |height: f64| {
+        let mut part = Session::default();
+        run(&mut part, "solid.box", json!({"length": 20, "width": 20, "height": height}));
+        run(&mut part, "joint.origin", json!({"occurrence": 0, "face": [10, 10, height], "name": "Mount"}));
+        run(&mut part, "file.save", json!({"path": file}));
+    };
+    save_part(10.0);
+    let mut s = Session::default();
+    run(&mut s, "component.insert_design", json!({"path": file, "name": "Motor", "translate": [100, 0, 0]}));
+    let listed = run(&mut s, "joint.list", json!({}));
+    let shown = listed["linked_origins"].as_array().is_some_and(|a| a.iter().any(|o| o["origin"] == "Mount" && o["occurrence"] == "Motor:1"));
+    assert!(shown, "{listed}");
+    run(&mut s, "joint.origin", json!({"occurrence": "Motor:1", "origin": "Mount", "name": "M"}));
+    let at = |s: &Session| {
+        let o = s.doc.assembly.origins.iter().find(|o| o.name == "M").map(|o| o.origin.clone()).unwrap();
+        let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), &o).unwrap();
+        (place(s, "Motor", Vec3::new(m[3][0], m[3][1], m[3][2])), Vec3::new(m[2][0], m[2][1], m[2][2]))
+    };
+    let (p, z) = at(&s);
+    assert!(near(p, Vec3::new(110.0, 10.0, 10.0)) && near(z, Vec3::Z), "{p:?} {z:?}");
+    // The design grows: read again, the origin is where the design has it now.
+    save_part(25.0);
+    run(&mut s, "component.update_links", json!({}));
+    assert!(near(at(&s).0, Vec3::new(110.0, 10.0, 25.0)), "{:?}", at(&s).0);
+    let back = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert!(near(at(&back).0, Vec3::new(110.0, 10.0, 25.0)), "{:?}", at(&back).0);
+    // A joint side takes it as well; an origin the design lacks is refused.
+    run(
+        &mut s,
+        "joint.create",
+        json!({"type": "rigid", "a": {"occurrence": 0, "point": [0, 0, 0]}, "b": {"occurrence": "Motor:1", "origin": "Mount"}}),
+    );
+    assert!(s.execute("joint.origin", &json!({"occurrence": "Motor:1", "origin": "Nope"})).is_err());
+    // Its link broken, the component keeps its bodies and the origins stay where they were.
+    run(&mut s, "component.break_link", json!({"component": "Motor"}));
+    assert!(near(at(&s).0, Vec3::new(110.0, 10.0, 25.0)), "{:?}", at(&s).0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
