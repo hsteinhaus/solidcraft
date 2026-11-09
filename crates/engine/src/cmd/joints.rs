@@ -26,7 +26,7 @@ mod inspect;
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("joint.origin", "Joint Origin", joint_origin).at("SOLID", "CREATE").icon("joint_origin").params(
-        "name?, occurrence?: id|name (default: from the pick, or the named face's component), offset?: {x?, y?, z?, angle?, flip?} (lengths and an angle, numbers or expressions, in the origin's own frame: moved along its x, y, z, turned about z, then z flipped) on any origin; sketch: name|id, point: \"<point id>\" (a sketch point of the component: z along the sketch's normal, x along its x or `x`; follows the point) | face: [x,y,z] | \"<name>\" (centre of a planar face) | circle: [x,y,z] | \"<name>\" (centre of a round end: a point on its wall or rim, the end's centre, or the round face's name as model.faces lists it) | edge: [x,y,z] (a point on an edge of a planar face: the edge's middle, z out of the face, y into it; on?: [x,y,z] a point on the face (default: the larger planar face beside the edge); corner?: [x,y,z] near one end: the corner there, x and y along its two edges into the face; found again by name, so it follows the face as it changes size; z?: [x,y,z] the frame's z instead of the face's normal, along the edge when it runs that way, x chosen from z: an edge or corner picked as it is, kept as a point where it can't be found by name) | point: [x,y,z], z?: [x,y,z]; a circle's z?: [x,y,z] (a round edge's centre with the way out of it: its end by name when that is the frame it shows, else a point there); body?: the named face's body; end?: \"<name>\" (a circle's end: the face across its rim there; default the end nearer the pick); x?: [x,y,z] (a direction, world) | \"<face name>\" | {face: [x,y,z]} (the frame's x: a direction, a plane's normal, or the way to another hole's axis; keeps a round origin's turn; a point's x is a direction, laid square to its z, default: chosen from z alone). Faces are kept by name: the origin follows its face, and a circle its end, when the design changes",
+        "name?, occurrence?: id|name (default: from the pick, or the named face's component), offset?: {x?, y?, z?, angle?, flip?} (lengths and an angle, numbers or expressions, in the origin's own frame: moved along its x, y, z, turned about z, then z flipped) on any origin; occurrence: id|name, origin: \"<name>\" (a joint origin the placed linked design defines, as joint.list's linked_origins names it; follows that design when its link is read again) | sketch: name|id, point: \"<point id>\" (a sketch point of the component: z along the sketch's normal, x along its x or `x`; follows the point) | face: [x,y,z] | \"<name>\" (centre of a planar face) | circle: [x,y,z] | \"<name>\" (centre of a round end: a point on its wall or rim, the end's centre, or the round face's name as model.faces lists it) | edge: [x,y,z] (a point on an edge of a planar face: the edge's middle, z out of the face, y into it; on?: [x,y,z] a point on the face (default: the larger planar face beside the edge); corner?: [x,y,z] near one end: the corner there, x and y along its two edges into the face; found again by name, so it follows the face as it changes size; z?: [x,y,z] the frame's z instead of the face's normal, along the edge when it runs that way, x chosen from z: an edge or corner picked as it is, kept as a point where it can't be found by name) | point: [x,y,z], z?: [x,y,z]; a circle's z?: [x,y,z] (a round edge's centre with the way out of it: its end by name when that is the frame it shows, else a point there); body?: the named face's body; end?: \"<name>\" (a circle's end: the face across its rim there; default the end nearer the pick); x?: [x,y,z] (a direction, world) | \"<face name>\" | {face: [x,y,z]} (the frame's x: a direction, a plane's normal, or the way to another hole's axis; keeps a round origin's turn; a point's x is a direction, laid square to its z, default: chosen from z alone). Faces are kept by name: the origin follows its face, and a circle its end, when the design changes",
     ),
     CommandSpec::new("joint.create", "Joint", joint).at("SOLID", "ASSEMBLE").icon("joint").key("J").params(
         "type: rigid|revolute|slider|cylindrical|pin_slot|planar|ball, or a relation: parallel|perpendicular|angle|point_on_plane|point_on_line|line_on_plane \
@@ -405,6 +405,17 @@ fn origin_snap_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointO
             .find(|o| &o.name == name)
             .map(|o| o.origin.clone())
             .ok_or_else(|| bad(cmd, format!("no joint origin `{name}`")));
+    }
+    // A joint origin a linked design defines, by the placement and its name there.
+    if let Some(name) = v.get("origin").and_then(Value::as_str) {
+        let occurrence = occurrence_id(s, v.get("occurrence"), cmd)?;
+        let o = JointOrigin { occurrence, snap: Snap::Linked { origin: name.to_string() } };
+        joints::resolve_origin(&s.doc, &s.model.state(), &o).map_err(|e| {
+            let known: Vec<&str> =
+                s.doc.links.get(&component_of(s, occurrence)).map(|l| l.origins.iter().map(|o| o.name.as_str()).collect()).unwrap_or_default();
+            bad(cmd, format!("{e} (its design has: {})", if known.is_empty() { "none".to_string() } else { known.join(", ") }))
+        })?;
+        return Ok(o);
     }
     // A point of a sketch, kept by the sketch and the point's id.
     if v.get("sketch").is_some() {
@@ -1810,6 +1821,15 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
     out["joints"] = json!(js);
     out["links"] = json!(links);
     out["origins"] = json!(origins);
+    // A linked design's own joint origins, by the placements that show them.
+    let linked: Vec<Value> = s
+        .doc
+        .occurrences
+        .iter()
+        .filter_map(|o| s.doc.links.get(&o.component).map(|l| (o, l)))
+        .flat_map(|(o, l)| l.origins.iter().map(move |lo| json!({"occurrence": o.name, "origin": lo.name})))
+        .collect();
+    out["linked_origins"] = json!(linked);
     out["floating"] = json!(floating_chains(s, &sol));
     Ok(out)
 }

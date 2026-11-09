@@ -151,7 +151,7 @@ fn references(doc: &Document, snap: &Snap) -> Vec<Value> {
             }
         }
         Snap::Offset { snap, .. } => return references(doc, snap),
-        Snap::Frame { .. } | Snap::Point { .. } | Snap::SketchPoint { .. } => {}
+        Snap::Frame { .. } | Snap::Point { .. } | Snap::SketchPoint { .. } | Snap::Linked { .. } => {}
     }
     out
 }
