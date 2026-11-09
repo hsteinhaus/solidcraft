@@ -261,6 +261,11 @@ impl FaceIndex {
 
     /// The face a point lies on (within `tol`).
     fn face_at(&self, p: Vec3, tol: f64) -> Option<usize> {
+        self.nearest_within(p, tol).map(|(_, i)| i)
+    }
+
+    /// The face nearest `p` within `tol`, and how far it is.
+    fn nearest_within(&self, p: Vec3, tol: f64) -> Option<(f64, usize)> {
         let mut best: Option<(f64, usize)> = None;
         for (i, (bounds, tris)) in self.faces.iter().enumerate() {
             if !bounds.inflated(tol).contains(p) {
@@ -271,7 +276,7 @@ impl FaceIndex {
                 best = Some((d, i));
             }
         }
-        best.map(|(_, i)| i)
+        best
     }
 }
 
@@ -1063,18 +1068,26 @@ pub(crate) fn clearly_nearer(d: f64, best: f64, p: Vec3) -> bool {
     d < best - 1e-9 * (1.0 + p.len())
 }
 
-/// Names of the faces holding each point (any body; empty when none does).
+/// Names of the faces holding each point: of the nearest face, on any body (empty when none
+/// does). The first body with a face within its tolerance named the round side of a long rod
+/// 0.5 mm beside a picked plane.
 pub fn face_names_at(st: &ModelState, pts: &[Vec3]) -> Vec<String> {
     pts.iter()
         .map(|p| {
+            let mut best: Option<(f64, &ModelBody, usize)> = None;
             for b in st.bodies.iter().filter(|b| !b.body.is_mesh()) {
                 let tol = (b.body.size() * 1e-3).max(1e-3);
+                if !b.outline_bounds().inflated(tol).contains(*p) {
+                    continue;
+                }
                 let idx = FaceIndex::new(&b.mesh(), face_count(b));
-                if let Some(f) = idx.face_at(*p, tol) {
-                    return face_names(b).get(f).cloned().unwrap_or_default();
+                if let Some((d, f)) = idx.nearest_within(*p, tol).map(|(d, f)| (exact_face_distance(b, f, *p, d), f))
+                    && best.is_none_or(|(bd, ..)| clearly_nearer(d, bd, *p))
+                {
+                    best = Some((d, b, f));
                 }
             }
-            String::new()
+            best.and_then(|(_, b, f)| face_names(b).get(f).cloned()).unwrap_or_default()
         })
         .collect()
 }
