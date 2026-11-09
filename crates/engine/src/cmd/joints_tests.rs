@@ -2971,3 +2971,29 @@ fn a_joint_origins_axes_follow_the_edge_and_face_they_name() {
     let wrong = json!({"occurrence": 0, "point": [0, 0, 0], "z_axis": {"edge": [50, 50, 50]}});
     assert!(s.execute("joint.origin", &wrong).is_err());
 }
+
+/// A joint origin on a circular edge of any face, as Fusion's joints take a circle: here the rim
+/// a chamfer's cone leaves on a pin's flat end. At the circle's centre, z out of the flat face it
+/// bounds; kept by the edge's name, so it follows the end when a parameter moves it.
+#[test]
+fn a_circle_origin_on_a_chamfer_rim_takes_the_rims_centre() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name": "zb", "expression": "0 mm"}));
+    run(&mut s, "component.create", json!({"name": "Pin"}));
+    run(&mut s, "solid.cylinder", json!({"base": [0, 0, "zb"], "radius": 3, "height": 10}));
+    run(&mut s, "solid.chamfer", json!({"edges": [[3, 0, 0]], "distance": 0.75}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "joint.origin", json!({"occurrence": "Pin", "circle": [2.25, 0, 0], "name": "R"}));
+    let frame = |s: &Session| {
+        let o = s.doc.assembly.origins.iter().find(|o| o.name == "R").map(|o| o.origin.clone()).unwrap();
+        let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), &o).unwrap();
+        (Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(m[2][0], m[2][1], m[2][2]))
+    };
+    let (at, z) = frame(&s);
+    assert!(near(at, Vec3::ZERO) && near(z, -Vec3::Z), "{at:?} {z:?}");
+    run(&mut s, "parameters.change", json!({"name": "zb", "expression": "4 mm"}));
+    let (at, z) = frame(&s);
+    assert!(near(at, Vec3::new(0.0, 0.0, 4.0)) && near(z, -Vec3::Z), "{at:?} {z:?}");
+    let back = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert!(near(frame(&back).0, Vec3::new(0.0, 0.0, 4.0)), "{:?}", frame(&back));
+}
