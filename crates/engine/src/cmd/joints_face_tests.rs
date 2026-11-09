@@ -646,3 +646,28 @@ fn a_face_centre_on_no_flat_face_is_refused_not_moved_elsewhere() {
         assert!(e.contains("not planar") || e.contains("no face"), "{p:?}: {e}");
     }
 }
+
+/// A circle cut into arcs only by a seam of the face beyond it is one arc for the box, as Fusion
+/// holds it (its periodic faces have no seam vertex): a hex standoff's end chamfered from its
+/// inscribed circle (McMaster 93655A701, joined on that face in Pixracer_Plattform_CFK) has six
+/// 60° arcs in Fusion, a box symmetric about the axis; the chamfer's revolve seam splitting one
+/// of them in two put the centre 3(sec 30° − 1)/2 = 0.232 mm off the axis.
+#[test]
+fn a_face_centre_takes_arcs_split_only_by_a_seam_as_one() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "YZ", "name": "Hex"}));
+    run(&mut s, "sketch.polygon.circumscribed", json!({"center": [0, 0], "radius": 3.0, "sides": 6}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "Hex", "start_offset": -5.35, "distance": 6.0, "operation": "new", "body_name": "B"}));
+    let x = 0.65 - 0.5 / 60f64.to_radians().tan();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Chamfer"}));
+    run(&mut s, "sketch.line", json!({"points": [[-10, 0], [10, 0]], "construction": true, "connect": false}));
+    for (a, b) in [([0.65, 3.0], [0.65, 3.5]), ([0.65, 3.5], [x, 3.5]), ([x, 3.5], [0.65, 3.0])] {
+        run(&mut s, "sketch.line", json!({"points": [a, b], "connect": false}));
+    }
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.revolve", json!({"sketch": "Chamfer", "profiles": [0], "axis": "l1", "angle": "360 deg", "operation": "cut"}));
+    run(&mut s, "joint.origin", json!({"occurrence": 0, "face": [0.65, 0, -2.0], "name": "End"}));
+    let (at, z) = origin_frame(&s, "End").unwrap();
+    assert!(at.dist(Vec3::new(0.65, 0.0, 0.0)) < 1e-9 && near(z, Vec3::X), "{at:?} {z:?}");
+}
