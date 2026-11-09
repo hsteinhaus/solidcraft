@@ -689,6 +689,7 @@ fn settle(s: &Session, mut o: JointOrigin, v: &Value, cmd: &str) -> Result<Joint
             return Err(bad(cmd, format!("the round face doesn't end on face `{want}` (its ends lie on: {})", names.join(", "))));
         }
     }
+    joints::check_face_pick(&s.doc, &st, &o).map_err(|e| bad(cmd, e.to_string()))?;
     let m = joints::resolve_origin(&s.doc, &st, &o).map_err(|e| bad(cmd, e.to_string()))?;
     joints::pin_end(&s.doc, &st, component, &mut o.snap);
     // A face or circle given no `x` keeps the x it has now, so its frame doesn't turn as the face
