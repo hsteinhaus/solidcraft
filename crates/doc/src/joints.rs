@@ -175,6 +175,8 @@ pub enum AxisRef {
     Face { face: String, pick: Vec3 },
     /// A construction axis, by name.
     Axis { axis: String },
+    /// A construction plane's normal, by the plane's name.
+    Plane { plane: String },
     /// A direction (component coordinates).
     Dir(Vec3),
 }
@@ -1137,6 +1139,10 @@ fn axis_dir(doc: &Document, st: &ModelState, component: u64, r: &AxisRef) -> Res
         AxisRef::Axis { axis } => match st.construct.iter().find(|c| c.name == *axis).map(|c| &c.geom) {
             Some(crate::construct::ConstructGeom::Axis { dir, .. }) => Ok(*dir),
             _ => Err(DocError::Unknown(format!("joint origin: construction axis `{axis}`"))),
+        },
+        AxisRef::Plane { plane } => match st.construct.iter().find(|c| c.name == *plane).map(|c| &c.geom) {
+            Some(crate::construct::ConstructGeom::Plane(p)) => Ok(p.normal()),
+            _ => Err(DocError::Unknown(format!("joint origin: construction plane `{plane}`"))),
         },
         AxisRef::Face { face: name, pick } => {
             let nf = face::named_face(doc, st, component, *pick, name)?;
