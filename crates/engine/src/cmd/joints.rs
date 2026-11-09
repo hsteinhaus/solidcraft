@@ -26,7 +26,7 @@ mod inspect;
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("joint.origin", "Joint Origin", joint_origin).at("SOLID", "CREATE").icon("joint_origin").params(
-        "name?, occurrence?: id|name (default: from the pick, or the named face's component), face: [x,y,z] | \"<name>\" (centre of a planar face) | circle: [x,y,z] | \"<name>\" (centre of a round end: a point on its wall or rim, the end's centre, or the round face's name as model.faces lists it) | edge: [x,y,z] (a point on an edge of a planar face: the edge's middle, z out of the face, y into it; on?: [x,y,z] a point on the face (default: the larger planar face beside the edge); corner?: [x,y,z] near one end: the corner there, x and y along its two edges into the face; found again by name, so it follows the face as it changes size; z?: [x,y,z] the frame's z instead of the face's normal, along the edge when it runs that way, x chosen from z: an edge or corner picked as it is, kept as a point where it can't be found by name) | point: [x,y,z], z?: [x,y,z]; a circle's z?: [x,y,z] (a round edge's centre with the way out of it: its end by name when that is the frame it shows, else a point there); body?: the named face's body; end?: \"<name>\" (a circle's end: the face across its rim there; default the end nearer the pick); x?: [x,y,z] (a direction, world) | \"<face name>\" | {face: [x,y,z]} (the frame's x: a direction, a plane's normal, or the way to another hole's axis; keeps a round origin's turn; a point's x is a direction, laid square to its z, default: chosen from z alone). Faces are kept by name: the origin follows its face, and a circle its end, when the design changes",
+        "name?, occurrence?: id|name (default: from the pick, or the named face's component), sketch: name|id, point: \"<point id>\" (a sketch point of the component: z along the sketch's normal, x along its x or `x`; follows the point) | face: [x,y,z] | \"<name>\" (centre of a planar face) | circle: [x,y,z] | \"<name>\" (centre of a round end: a point on its wall or rim, the end's centre, or the round face's name as model.faces lists it) | edge: [x,y,z] (a point on an edge of a planar face: the edge's middle, z out of the face, y into it; on?: [x,y,z] a point on the face (default: the larger planar face beside the edge); corner?: [x,y,z] near one end: the corner there, x and y along its two edges into the face; found again by name, so it follows the face as it changes size; z?: [x,y,z] the frame's z instead of the face's normal, along the edge when it runs that way, x chosen from z: an edge or corner picked as it is, kept as a point where it can't be found by name) | point: [x,y,z], z?: [x,y,z]; a circle's z?: [x,y,z] (a round edge's centre with the way out of it: its end by name when that is the frame it shows, else a point there); body?: the named face's body; end?: \"<name>\" (a circle's end: the face across its rim there; default the end nearer the pick); x?: [x,y,z] (a direction, world) | \"<face name>\" | {face: [x,y,z]} (the frame's x: a direction, a plane's normal, or the way to another hole's axis; keeps a round origin's turn; a point's x is a direction, laid square to its z, default: chosen from z alone). Faces are kept by name: the origin follows its face, and a circle its end, when the design changes",
     ),
     CommandSpec::new("joint.create", "Joint", joint).at("SOLID", "ASSEMBLE").icon("joint").key("J").params(
         "type: rigid|revolute|slider|cylindrical|pin_slot|planar|ball, or a relation: parallel|perpendicular|angle|point_on_plane|point_on_line|line_on_plane \
@@ -370,6 +370,10 @@ pub(crate) fn origin_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<
             .map(|o| o.origin.clone())
             .ok_or_else(|| bad(cmd, format!("no joint origin `{name}`")));
     }
+    // A point of a sketch, kept by the sketch and the point's id.
+    if v.get("sketch").is_some() {
+        return sketch_point_origin(s, v, cmd);
+    }
     // A face given by its name, as `model.faces` lists it.
     if let Some((what, name)) = ["face", "circle"].iter().find_map(|k| v.get(*k).and_then(Value::as_str).map(|n| (*k, n))) {
         return origin_by_name(s, v, what, name, cmd);
@@ -562,6 +566,26 @@ fn settle(s: &Session, mut o: JointOrigin, v: &Value, cmd: &str) -> Result<Joint
 
 /// A joint origin's x reference (its turn about z): `x: [x, y, z]` (a direction, world), `x:
 /// "<face name>"`, or `x: {face: [x, y, z]}` (the face of the origin's component there, world).
+/// `{sketch, point, occurrence?, x?}`: point `point` of sketch `sketch` (a name or an id), on the
+/// sketch's component placed by `occurrence` (default: its first placement, or the design for a
+/// sketch of the design), z along the sketch's normal and x along its x unless `x` says otherwise.
+fn sketch_point_origin(s: &Session, v: &Value, cmd: &str) -> Result<JointOrigin> {
+    let sketch = super::features::sketch_id(s, v.get("sketch"), cmd, "sketch")?;
+    let point = str_(v, "point").filter(|p| !p.is_empty()).ok_or_else(|| bad(cmd, "a sketch point origin needs `point`, the point's id"))?;
+    let component = s.doc.feature(sketch).map_or(0, |f| f.component);
+    let occurrence = match v.get("occurrence") {
+        Some(o) => occurrence_id(s, Some(o), cmd)?,
+        None if component == 0 => 0,
+        None => s.doc.occurrence_of(component).map(|o| o.id).ok_or_else(|| bad(cmd, "the sketch's component is not placed"))?,
+    };
+    let t = if occurrence == 0 { solidcraft_doc::IDENTITY } else { joints::occurrence_world(&s.doc, occurrence) };
+    let inv = solidcraft_doc::mat_inverse(&t).ok_or_else(|| bad(cmd, "occurrence transform"))?;
+    let x = x_param(s, v, component, &inv, cmd)?;
+    let o = JointOrigin { occurrence, snap: Snap::SketchPoint { sketch, point: point.to_string(), x } };
+    joints::resolve_origin(&s.doc, &s.model.state(), &o).map_err(|e| bad(cmd, e.to_string()))?;
+    Ok(o)
+}
+
 fn x_param(s: &Session, v: &Value, component: u64, inv: &solidcraft_doc::Mat, cmd: &str) -> Result<Option<XRef>> {
     let st = s.model.state();
     let named = |name: &str| -> Result<Option<XRef>> {

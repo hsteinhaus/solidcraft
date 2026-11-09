@@ -86,6 +86,15 @@ pub enum Snap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         axis: Option<EdgeAxis>,
     },
+    /// A point of a sketch of the component, kept by the sketch (its feature) and the point's id
+    /// so it follows the point: z along the sketch's normal, x along the sketch's x unless `x`
+    /// says otherwise (as a face origin's).
+    SketchPoint {
+        sketch: u64,
+        point: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<XRef>,
+    },
     /// A point, z along `z` (default +Z) and x toward `x` laid square to z (default: one chosen
     /// from z alone).
     Point {
@@ -144,6 +153,9 @@ impl Snap {
                 out.push(face);
             }
         }
+        if let Snap::SketchPoint { x: Some(XRef::Face { face, .. }), .. } = self {
+            out.push(face);
+        }
         if let Snap::CircleCenter { end: Some(end), .. } = self {
             out.push(end);
         }
@@ -171,6 +183,7 @@ impl Snap {
                 }
             }
             Snap::Edge { edge, face, corner, .. } => out.extend(edge.iter_mut().chain(face.iter_mut()).chain(corner.iter_mut())),
+            Snap::SketchPoint { x: Some(XRef::Face { face, .. }), .. } => out.push(face),
             _ => {}
         }
         out
@@ -209,6 +222,7 @@ impl Snap {
             Snap::FaceCenter { pick, x, .. } | Snap::CircleCenter { pick, x, .. } => pick.is_finite() && x_ok(x),
             Snap::Point { point, z, x } => point.is_finite() && z.is_none_or(|z| z.is_finite()) && x.is_none_or(|x| x.is_finite()),
             Snap::Edge { pick, axis, .. } => pick.is_finite() && axis.is_none_or(|a| a.dir().is_finite()),
+            Snap::SketchPoint { x, .. } => x_ok(x),
         }
     }
 }
@@ -846,11 +860,33 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             frame(c, n, face::x_axis(doc, st, comp, x.as_ref(), c)?).ok_or_else(bad)
         }
         Snap::Edge { .. } => edge::edge_frame(doc, st, component_of(doc, o.occurrence)?, &o.snap),
+        Snap::SketchPoint { sketch, point, x } => {
+            let comp = component_of(doc, o.occurrence)?;
+            let (at, plane) = sketch_point(doc, st, comp, *sketch, point)?;
+            let x = face::x_axis(doc, st, comp, x.as_ref(), at)?.unwrap_or(plane.x);
+            frame(at, plane.normal(), Some(x)).ok_or_else(bad)
+        }
         Snap::CircleCenter { x, .. } => {
             let r = round_of(doc, st, o)?;
             frame(r.centre, r.z, face::x_axis(doc, st, component_of(doc, o.occurrence)?, x.as_ref(), r.centre)?).ok_or_else(bad)
         }
     }
+}
+
+/// Point `point` of the sketch made by feature `sketch` and the sketch's plane, in the coordinates
+/// of `component`, which the sketch must belong to (a joint origin is on its own component).
+pub fn sketch_point(doc: &Document, st: &ModelState, component: u64, sketch: u64, point: &str) -> Result<(Vec3, solidcore_record::Plane)> {
+    let f = doc.feature(sketch).ok_or_else(|| DocError::Unknown(format!("joint origin: sketch {sketch}")))?;
+    if f.component != component {
+        return Err(DocError::Invalid(format!("joint origin: sketch `{}` belongs to another component", f.name)));
+    }
+    let ss = st.sketch(sketch).ok_or_else(|| DocError::Unknown(format!("joint origin: sketch `{}`", f.name)))?;
+    let q = ss
+        .sketch
+        .point_index(point)
+        .and_then(|i| ss.sketch.point(i))
+        .ok_or_else(|| DocError::Unknown(format!("joint origin: point `{point}` of sketch `{}`", f.name)))?;
+    Ok((ss.plane.to_world(q), ss.plane))
 }
 
 /// A circle-centre snap's cylinder and the end it takes (component coordinates): through its

@@ -150,7 +150,7 @@ fn references(doc: &Document, snap: &Snap) -> Vec<Value> {
                 out.push(with_role("corner", edge_ref(doc, e)));
             }
         }
-        Snap::Frame { .. } | Snap::Point { .. } => {}
+        Snap::Frame { .. } | Snap::Point { .. } | Snap::SketchPoint { .. } => {}
     }
     out
 }
