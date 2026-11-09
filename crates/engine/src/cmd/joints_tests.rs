@@ -2997,3 +2997,20 @@ fn a_circle_origin_on_a_chamfer_rim_takes_the_rims_centre() {
     let back = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
     assert!(near(frame(&back).0, Vec3::new(0.0, 0.0, 4.0)), "{:?}", frame(&back));
 }
+
+/// `joint.list` gives each joint origin's kind and where it is in the world (origin, z, x), its
+/// occurrence placed as the design places it, to check it against another program's frame.
+#[test]
+fn joint_list_shows_each_origins_kind_and_world_frame() {
+    let mut s = Session::default();
+    run(&mut s, "component.create", json!({"name": "Part"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "occurrence.move", json!({"occurrence": "Part:1", "translate": [100, 0, 0], "capture": true, "move_grounded": true}));
+    run(&mut s, "joint.origin", json!({"occurrence": "Part", "face": [105, 5, 10], "name": "Top"}));
+    let listed = run(&mut s, "joint.list", json!({}));
+    let top = listed["origins"].as_array().and_then(|a| a.iter().find(|o| o["name"] == "Top")).cloned().unwrap();
+    assert_eq!(top["kind"], "face_center", "{top}");
+    let v = |k: &str| Vec3::new(top["frame"][k][0].as_f64().unwrap(), top["frame"][k][1].as_f64().unwrap(), top["frame"][k][2].as_f64().unwrap());
+    assert!(near(v("origin"), Vec3::new(105.0, 5.0, 10.0)) && near(v("z"), Vec3::Z) && v("x").dot(Vec3::Z).abs() < 1e-9, "{top}");
+}
