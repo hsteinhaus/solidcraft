@@ -1458,6 +1458,16 @@ fn evaluation_values(doc: &Document) -> (BTreeMap<String, Value>, BTreeMap<Strin
 /// A feature's fingerprint in the chain after `prev`: its own inputs, where it is placed, and
 /// the sheet metal or plastic rules it takes defaults from.
 #[allow(clippy::too_many_arguments)]
+/// The bodies a feature reads by name: its body references, and a sketch's face anchor and links.
+fn bodies_read(f: &Feature) -> Vec<String> {
+    let mut v = f.kind.input_bodies();
+    if let FeatureKind::Sketch { plane, sketch } = &f.kind {
+        v.extend(crate::face_anchor::plane_face_anchor(plane).map(|a| a.target.body.clone()));
+        v.extend(sketch.links.iter().flat_map(|l| l.source.bodies()).map(str::to_string));
+    }
+    v
+}
+
 fn chain_fingerprint(
     doc: &Document,
     vals: &BTreeMap<String, Value>,
@@ -2177,11 +2187,16 @@ impl Model {
         let watched = crate::progress::begin(doc.features.len());
         // The features that failed so far in this pass, by id: their names and errors (#9075).
         let mut failed: std::collections::HashMap<u64, (String, String)> = std::collections::HashMap::new();
+        // The bodies those features name (`body_names`), with the feature's name and error.
+        let mut failed_bodies: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
         for (i, f) in doc.features.iter().enumerate() {
             if let Some(r) = out.last()
                 && let Some(e) = &r.error
             {
                 failed.insert(r.id, (r.name.clone(), e.clone()));
+                for name in doc.feature(r.id).map(|g| g.body_names.as_slice()).unwrap_or_default() {
+                    failed_bodies.insert(name.trim().to_string(), (r.name.clone(), e.clone()));
+                }
             }
             self.placement_local = self.placement_local && placement_reuse::local_geometry(f, &feature_component);
             let rolled_back = i >= marker;
@@ -2255,6 +2270,14 @@ impl Model {
             } else {
                 f.kind.input_sketches().into_iter().find_map(|id| failed.get(&id)).map(|(name, e)| format!("sketch `{name}` failed: {e}"))
             };
+            // A body the feature reads is missing because the feature naming it failed earlier in
+            // this pass: the feature fails naming that feature, as for a failed sketch.
+            let failed_sketch = failed_sketch.or_else(|| {
+                bodies_read(f)
+                    .into_iter()
+                    .find(|b| failed_bodies.contains_key(b) && state.body(b).is_none())
+                    .and_then(|b| failed_bodies.get(&b).map(|(name, e)| format!("body `{b}` is missing: `{name}` failed: {e}")))
+            });
             if let Some(e) = failed_sketch {
                 recomputed += 1;
                 reuse = false;
