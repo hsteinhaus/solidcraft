@@ -83,10 +83,20 @@ impl NamedFace<'_> {
         let faces = self.body.joint_faces()?;
         Ok(faces.get(self.face).and_then(|f| {
             let n = f.plane_normal?;
-            let c = outline_centre(&self.body.mesh(), self.face, f.centroid, n).unwrap_or(f.centroid);
+            let c = exact_centre(self.body, self.face)
+                .unwrap_or_else(|| outline_centre(&self.body.mesh(), self.face, f.centroid, n).unwrap_or(f.centroid));
             Some((apply_point(&self.offset, c), apply_vector(&self.offset, n)))
         }))
     }
+}
+
+/// The centre of planar face `face` of `b` from its exact curves (the body's own coordinates):
+/// the middle of the area its outer loop encloses for a face with holes (as [`outline_centre`]
+/// takes it), its area centroid otherwise. `None` where the face's curves don't give it exactly
+/// (the caller takes the mesh's).
+pub(super) fn exact_centre(b: &crate::ModelBody, face: usize) -> Option<Vec3> {
+    let holed = b.body.record().faces.get(face)?.loops.iter().filter(|l| matches!(l, solidcore_record::brep::Loop::Edges { .. })).count() > 1;
+    solidcraft_kernel::planar_face_centre(&b.body, face, holed).map(|(_, c)| c)
 }
 
 /// The middle of the area the outer boundary of planar face `face` encloses (the body's own

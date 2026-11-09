@@ -61,6 +61,78 @@ pub(crate) fn surface_of(b: &Brep, face: usize) -> Option<FaceSurface> {
     })
 }
 
+/// The area and centroid of planar face `face` of `b`, integrated exactly over its own loops
+/// (Green's theorem in its plane, Gauss–Legendre on each edge's exact curve between its knots):
+/// over the whole face (its holes left out) or, with `outline`, over the area its outer loop
+/// encloses. `None` for a face not on a plane, a mesh body, or a loop with no exact curve.
+pub fn planar_face_centre(b: &Body, face: usize, outline: bool) -> Option<(f64, Vec3)> {
+    use solidcore_record::brep::Loop;
+    // 8-point Gauss–Legendre on [-1, 1].
+    const NODES: [(f64, f64); 8] = [
+        (-0.960_289_856_497_536_2, 0.101_228_536_290_376_26),
+        (-0.796_666_477_413_626_7, 0.222_381_034_453_374_47),
+        (-0.525_532_409_916_329_0, 0.313_706_645_877_887_3),
+        (-0.183_434_642_495_649_8, 0.362_683_783_378_362_0),
+        (0.183_434_642_495_649_8, 0.362_683_783_378_362_0),
+        (0.525_532_409_916_329_0, 0.313_706_645_877_887_3),
+        (0.796_666_477_413_626_7, 0.222_381_034_453_374_47),
+        (0.960_289_856_497_536_2, 0.101_228_536_290_376_26),
+    ];
+    if b.is_mesh() {
+        return None;
+    }
+    let Some(FaceSurface::Plane { normal, point }) = face_surface(b, face) else { return None };
+    let n = *normal;
+    let u = if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+    let u = (u - n * u.dot(n)).normalized()?;
+    let v = n.cross(u);
+    let record = b.record();
+    let f = record.faces.get(face)?;
+    let (mut area, mut mu, mut mv) = (0.0, 0.0, 0.0);
+    for (i, l) in f.loops.iter().enumerate() {
+        if outline && i > 0 {
+            break;
+        }
+        let Loop::Edges { edges } = l else { continue };
+        for oe in edges {
+            let e = record.edges.get(oe.edge as usize)?;
+            let c = CurveEval::new(e.parameters()).ok()?;
+            let [t0, t1] = e.interval;
+            // Pieces between the curve's knots, each split further, so every piece is smooth.
+            let mut cuts = vec![t0, t1];
+            match e.parameters() {
+                Curve::Spline { knots, .. } | Curve::RationalSpline { knots, .. } => {
+                    cuts.extend(knots.iter().copied().filter(|k| *k > t0 && *k < t1))
+                }
+                Curve::Polyline { points } => cuts.extend((1..points.len()).map(|i| i as f64).filter(|k| *k > t0 && *k < t1)),
+                _ => {}
+            }
+            cuts.sort_by(f64::total_cmp);
+            cuts.dedup_by(|a, b| (*a - *b).abs() <= 1e-14 * (1.0 + b.abs()));
+            let sign = if oe.forward { 1.0 } else { -1.0 };
+            for w in cuts.windows(2) {
+                const SPLIT: usize = 16;
+                for k in 0..SPLIT {
+                    let (a, z) = (w[0] + (w[1] - w[0]) * k as f64 / SPLIT as f64, w[0] + (w[1] - w[0]) * (k + 1) as f64 / SPLIT as f64);
+                    let half = 0.5 * (z - a);
+                    for (x, wt) in NODES {
+                        let (p, d) = c.derivs(a + half * (x + 1.0))?;
+                        let (px, py) = ((p - point).dot(u), (p - point).dot(v));
+                        let (dx, dy) = (d.dot(u) * half * wt * sign, d.dot(v) * half * wt * sign);
+                        area += 0.5 * (px * dy - py * dx);
+                        mu += 0.5 * px * px * dy;
+                        mv -= 0.5 * py * py * dx;
+                    }
+                }
+            }
+        }
+    }
+    if !(area.abs() > 0.0) || !area.is_finite() {
+        return None;
+    }
+    Some((area.abs(), point + u * (mu / area) + v * (mv / area)))
+}
+
 /// The circle (or arc of one) an edge's curve lies on, from its exact curve.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EdgeCircle {
