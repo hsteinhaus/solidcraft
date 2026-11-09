@@ -2871,3 +2871,27 @@ fn a_torus_face_round_most_of_its_tube_is_formed_within_one_turn_of_it() {
         assert!(rel(m.area, area) < 1e-6, "{tube:?}: area {} vs {area}", m.area);
     }
 }
+
+/// A face on an exact plane is planar with that plane's normal, whatever its triangles say. In a
+/// tolerant model (here the cube's top plane tilted 0.02 against the edges that bound it, which
+/// stay level within the file's tolerance) the triangles along the boundary lean, and the face
+/// was taken for curved: a joint origin at the centre of a motor's flat mount went to a small
+/// tilted face nearby instead.
+#[test]
+fn a_tolerant_planes_face_takes_the_planes_exact_normal() {
+    let tilt = Vec3::new(0.0, 0.02, 1.0).normalized().unwrap();
+    let mut entities = cube_entities().replace("#428=DIRECTION('',(0.,0.,1.));", "#428=DIRECTION('',(0.,0.02,1.));");
+    assert!(entities.contains("(0.,0.02,1.)"));
+    entities += &context(10, "(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
+    entities += "#9=ADVANCED_BREP_SHAPE_REPRESENTATION('Tilted',(#101),#10);\n";
+    let import = step_import(&format!("{HEAD}{entities}{TAIL}")).unwrap();
+    let body = &import.bodies[0].body;
+    let faces = body.faces((body.size() * 1e-3).max(1e-3)).unwrap();
+    let top = (0..body.face_count())
+        .find(|f| matches!(crate::face_surface(body, *f), Some(crate::FaceSurface::Plane { normal, .. }) if (normal.dot(tilt).abs() - 1.0).abs() < 1e-12))
+        .expect("the tilted top face");
+    let n = faces[top].plane_normal.expect("the top face is planar");
+    assert!((n - tilt).len() < 1e-12, "{n:?} against {tilt:?}");
+    // The other faces keep theirs: the bottom's outward normal is -Z.
+    assert!(faces.iter().any(|f| f.plane_normal.is_some_and(|n| (n + Vec3::Z).len() < 1e-12)));
+}
