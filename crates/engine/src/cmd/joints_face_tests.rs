@@ -617,6 +617,16 @@ fn a_face_centre_on_no_flat_face_is_refused_not_moved_elsewhere() {
     let st = s.model.state();
     let top = solidcraft_doc::joints::resolve_origin(&s.doc, &st, &snap(Vec3::new(1.0, 1.0, 10.0))).unwrap();
     assert!(near(Vec3::new(top[3][0], top[3][1], top[3][2]), Vec3::new(0.0, 0.0, 10.0)), "{top:?}");
+    // A ring's centre lies in its hole, on no face: the flat face around it is the one meant.
+    run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 2, "corner": [40, -10, 0], "operation": "new"}));
+    run(&mut s, "solid.cylinder", json!({"base": [50, 0, -1], "radius": 3, "height": 4, "operation": "cut"}));
+    let st = s.model.state();
+    let ring = solidcraft_doc::joints::resolve_origin(&s.doc, &st, &snap(Vec3::new(50.0, 0.0, 2.0))).unwrap();
+    assert!(
+        near(Vec3::new(ring[3][0], ring[3][1], ring[3][2]), Vec3::new(50.0, 0.0, 2.0))
+            && near(Vec3::new(ring[2][0], ring[2][1], ring[2][2]), Vec3::Z),
+        "{ring:?}"
+    );
     for p in [Vec3::new(5.0, 0.0, 5.0), Vec3::new(30.0, 0.0, 10.0)] {
         let e = solidcraft_doc::joints::resolve_origin(&s.doc, &st, &snap(p)).unwrap_err().to_string();
         assert!(e.contains("not planar") || e.contains("no face"), "{p:?}: {e}");
