@@ -956,3 +956,16 @@ fn a_face_pick_is_named_from_the_nearest_face() {
     assert!(parallel(m.normal(), Vec3::X) && on_plane(&m, Vec3::new(5.0, 0.0, 0.0)), "{m:?}");
 }
 
+/// A point where two bodies meet lies on a face of each: `body` says which was picked. Here a
+/// bar's round side touches a block's top along a line; the tangent plane is the bar's.
+#[test]
+fn a_face_pick_on_two_bodies_takes_the_face_of_the_body_given() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"corner": [-2, -8, -10], "length": 4, "width": 6, "height": 10, "body_name": "Block"}));
+    run(&mut s, "solid.cylinder", json!({"base": [-20, 0, 0], "axis": "X", "radius": 5, "height": 40, "operation": "new", "body_name": "Bar"}));
+    run(&mut s, "construct.plane.tangent", json!({"face": {"face": [0, -5, 0], "body": "Bar"}, "name": "T"}));
+    let t = plane(&s, "T");
+    assert!(parallel(t.normal(), Vec3::Y) && on_plane(&t, Vec3::new(0.0, -5.0, 0.0)), "{t:?}");
+    let e = s.execute("construct.plane.tangent", &json!({"face": {"face": [0, -5, 0], "body": "Nope"}})).unwrap_err();
+    assert!(e.to_string().contains("Nope"), "{e}");
+}
