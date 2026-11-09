@@ -158,12 +158,22 @@ fn face_of<'a>(st: &'a ModelState, at: Vec3, name: &Option<String>) -> Result<(&
             .and_then(|hit| st.bodies.get(hit.body).filter(|b| !b.body.is_mesh() && hit.face < b.body.face_count()).map(|b| (b, hit.face, hit.point)))
             .ok_or_else(|| DocError::reselect(n));
     }
+    // The nearest face, when the point lies on it: the first body with a face within the pick
+    // tolerance (5 % of its size) took a round side of another body beside a picked plane.
+    let mut best: Option<(f64, &ModelBody, usize)> = None;
     for b in bodies(st) {
-        if let Some(fi) = crate::appearance::face_index_at(b, at) {
-            return Ok((b, fi, at));
+        let tol = (b.body.size() * 1e-3).max(1e-3);
+        if !b.outline_bounds().inflated(tol).contains(at) {
+            continue;
+        }
+        if let Some((d, fi)) =
+            crate::appearance::nearest_face(b, at).filter(|(d, _)| *d <= tol).map(|(d, fi)| (crate::naming::exact_face_distance(b, fi, at, d), fi))
+            && best.is_none_or(|(bd, ..)| crate::naming::clearly_nearer(d, bd, at))
+        {
+            best = Some((d, b, fi));
         }
     }
-    Err(bad(format!("no face at {at:?}")))
+    best.map(|(_, b, fi)| (b, fi, at)).ok_or_else(|| bad(format!("no face at {at:?}")))
 }
 
 /// The edge a stored name finds, on any body. The very edge on several bodies (the placements
