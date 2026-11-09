@@ -405,7 +405,7 @@ fn side_pick(app: &SolveApp, o: &JointOrigin) -> Option<Sel> {
     let (pick, face, edge) = match &o.snap {
         Snap::FaceCenter { pick, face, .. } | Snap::CircleCenter { pick, face, .. } => (*pick, face.as_deref(), None),
         Snap::Edge { pick, edge, .. } => (*pick, None, edge.as_deref()),
-        Snap::Point { .. } | Snap::Frame { .. } | Snap::SketchPoint { .. } => {
+        Snap::Point { .. } | Snap::Frame { .. } | Snap::SketchPoint { .. } | Snap::Offset { .. } => {
             let path = if o.occurrence == 0 {
                 Vec::new()
             } else {

@@ -95,6 +95,23 @@ pub enum Snap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x: Option<XRef>,
     },
+    /// Another origin moved in its own frame, as Fusion keeps a transform on every joint
+    /// origin: along its x, y and z by `x`, `y`, `z`, turned about its z by `angle`, then turned
+    /// over (a half turn about its x) when `flip`. Each is an expression (lengths, an angle), so
+    /// it follows the parameters it names.
+    Offset {
+        snap: Box<Snap>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        z: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        angle: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        flip: bool,
+    },
     /// A point, z along `z` (default +Z) and x toward `x` laid square to z (default: one chosen
     /// from z alone).
     Point {
@@ -146,6 +163,9 @@ impl Snap {
     /// The persistent face and edge names the snap refers to (its face, its end's, its x reference's;
     /// an edge origin's edge, face and corner edge).
     pub fn face_names(&self) -> Vec<&String> {
+        if let Snap::Offset { snap, .. } = self {
+            return snap.face_names();
+        }
         let mut out = Vec::new();
         if let Snap::FaceCenter { face, x, .. } | Snap::CircleCenter { face, x, .. } = self {
             out.extend(face.iter());
@@ -184,6 +204,7 @@ impl Snap {
             }
             Snap::Edge { edge, face, corner, .. } => out.extend(edge.iter_mut().chain(face.iter_mut()).chain(corner.iter_mut())),
             Snap::SketchPoint { x: Some(XRef::Face { face, .. }), .. } => out.push(face),
+            Snap::Offset { snap, .. } => return snap.face_names_mut(),
             _ => {}
         }
         out
@@ -210,6 +231,18 @@ impl Snap {
         self
     }
 
+    /// The expressions of an offset origin, to rewrite (a renamed parameter).
+    pub fn exprs_mut(&mut self) -> Vec<&mut String> {
+        match self {
+            Snap::Offset { snap, x, y, z, angle, .. } => {
+                let mut out: Vec<&mut String> = [x, y, z, angle].into_iter().flatten().collect();
+                out.extend(snap.exprs_mut());
+                out
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Whether every point and direction in the snap is finite.
     pub fn is_finite(&self) -> bool {
         let x_ok = |x: &Option<XRef>| match x {
@@ -223,6 +256,7 @@ impl Snap {
             Snap::Point { point, z, x } => point.is_finite() && z.is_none_or(|z| z.is_finite()) && x.is_none_or(|x| x.is_finite()),
             Snap::Edge { pick, axis, .. } => pick.is_finite() && axis.is_none_or(|a| a.dir().is_finite()),
             Snap::SketchPoint { x, .. } => x_ok(x),
+            Snap::Offset { snap, .. } => snap.is_finite(),
         }
     }
 }
@@ -679,7 +713,12 @@ impl Assembly {
     /// The expressions of `exprs`, to rewrite (a renamed parameter).
     pub fn exprs_mut(&mut self) -> Vec<&mut String> {
         let mut out = Vec::new();
+        for o in &mut self.origins {
+            out.extend(o.origin.snap.exprs_mut());
+        }
         for j in &mut self.joints {
+            out.extend(j.a.snap.exprs_mut());
+            out.extend(j.b.snap.exprs_mut());
             let x = &mut j.exprs;
             out.extend(x.offset.as_mut());
             out.extend(x.angle.as_mut());
@@ -860,6 +899,22 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             frame(c, n, face::x_axis(doc, st, comp, x.as_ref(), c)?).ok_or_else(bad)
         }
         Snap::Edge { .. } => edge::edge_frame(doc, st, component_of(doc, o.occurrence)?, &o.snap),
+        Snap::Offset { snap, x, y, z, angle, flip } => {
+            let m = resolve_origin(doc, st, &JointOrigin { occurrence: o.occurrence, snap: (**snap).clone() })?;
+            let axis = |i: usize| Vec3::new(m[i][0], m[i][1], m[i][2]);
+            let params = Params::new(doc);
+            let eval = |e: &Option<String>, kind: crate::expr::Kind| -> Result<f64> {
+                let Some(e) = e else { return Ok(0.0) };
+                let v = params.eval(e, kind).map_err(|err| DocError::Invalid(format!("joint origin offset `{e}`: {err}")))?;
+                if v.is_finite() && v.abs() < MAX_EXPR_VALUE { Ok(v) } else { Err(DocError::Invalid(format!("joint origin offset `{e}` gives {v}"))) }
+            };
+            let (len, ang) = (crate::expr::Kind::Length, crate::expr::Kind::Angle);
+            let (ox, oy, oz) = (axis(0), axis(1), axis(2));
+            let at = axis(3) + ox * eval(x, len)? + oy * eval(y, len)? + oz * eval(z, len)?;
+            let (sin, cos) = eval(angle, ang)?.sin_cos();
+            let turned = ox * cos + oy * sin;
+            frame(at, if *flip { -oz } else { oz }, Some(turned)).ok_or_else(bad)
+        }
         Snap::SketchPoint { sketch, point, x } => {
             let comp = component_of(doc, o.occurrence)?;
             let (at, plane) = sketch_point(doc, st, comp, *sketch, point)?;
