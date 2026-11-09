@@ -714,3 +714,24 @@ fn a_pinned_profile_frame_keeps_the_frame_it_was_made_in() {
         assert!(measure(&reopened).centroid.dist(measure(&r).centroid) < 1e-6, "{kind} reopened");
     }
 }
+
+/// The frame parameters are part of their commands' contracts: a strict parameter check takes
+/// `profile_frame` on solid.extrude (also redefined), solid.revolve and solid.sweep, and
+/// `link_frames` on sketch.create and sketch.edit.
+#[test]
+fn a_strict_parameter_check_takes_the_frame_parameters() {
+    let mut s = Session { param_check: crate::schema::ParamCheck::Strict, ..Session::default() };
+    let pin = json!([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]]);
+    run(&mut s, "sketch.create", json!({"plane":"XZ","name":"P","link_frames":{}}));
+    run(&mut s, "sketch.line", json!({"points":[[20,0],[20,-40]],"ids":["up"]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "sketch.create", json!({"plane":"XY","name":"S"}));
+    run(&mut s, "sketch.circle.center", json!({"center":[20,0],"radius":5}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "sketch.edit", json!({"sketch":"S","link_frames":{"root":pin}}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch":"S","distance":5,"name":"E","profile_frame":pin}));
+    run(&mut s, "timeline.redefine", json!({"feature":"E","command":"solid.extrude","params":{"sketch":"S","distance":6,"profile_frame":pin}}));
+    run(&mut s, "solid.revolve", json!({"sketch":"S","axis":"y","profile_frame":pin}));
+    run(&mut s, "solid.sweep", json!({"sketch":"S","path_sketch":"P","path":["up"],"operation":"new","profile_frame":pin}));
+}
