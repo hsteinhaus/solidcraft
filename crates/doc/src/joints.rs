@@ -95,6 +95,16 @@ pub enum Snap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x: Option<XRef>,
     },
+    /// A vertex of the component's bodies, found again by the persistent names of the edges that
+    /// meet there (`pick` is where it was picked): z along `z` (default +Z), x by `x`.
+    Vertex {
+        pick: Vec3,
+        edges: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        z: Option<Vec3>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<XRef>,
+    },
     /// A point of a round face's axis: the face's start or end along its axis, or halfway (Fusion's
     /// key points of a cylindrical face), z along the axis as the kernel turns it. `face` is the
     /// face's persistent name, which finds it again; `pick` is a point on it as it was picked.
@@ -204,6 +214,12 @@ impl Snap {
                 out.push(face);
             }
         }
+        if let Snap::Vertex { edges, x, .. } = self {
+            out.extend(edges.iter());
+            if let Some(XRef::Face { face, .. }) = x {
+                out.push(face);
+            }
+        }
         if let Snap::CircleCenter { end: Some(end), .. } = self {
             out.push(end);
         }
@@ -235,6 +251,12 @@ impl Snap {
             Snap::Offset { snap, .. } => return snap.face_names_mut(),
             Snap::Axial { face, x, .. } => {
                 out.push(face);
+                if let Some(XRef::Face { face, .. }) = x {
+                    out.push(face);
+                }
+            }
+            Snap::Vertex { edges, x, .. } => {
+                out.extend(edges.iter_mut());
                 if let Some(XRef::Face { face, .. }) = x {
                     out.push(face);
                 }
@@ -293,6 +315,7 @@ impl Snap {
             Snap::Offset { snap, .. } => snap.is_finite(),
             Snap::Linked { .. } => true,
             Snap::Axial { pick, x, .. } => pick.is_finite() && x_ok(x),
+            Snap::Vertex { pick, z, x, .. } => pick.is_finite() && z.is_none_or(|z| z.is_finite()) && x_ok(x),
         }
     }
 }
@@ -935,6 +958,11 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             frame(c, n, face::x_axis(doc, st, comp, x.as_ref(), c)?).ok_or_else(bad)
         }
         Snap::Edge { .. } => edge::edge_frame(doc, st, component_of(doc, o.occurrence)?, &o.snap),
+        Snap::Vertex { pick, edges, z, x } => {
+            let comp = component_of(doc, o.occurrence)?;
+            let at = vertex_point(doc, st, comp, *pick, edges)?;
+            frame(at, z.unwrap_or(Vec3::Z), face::x_axis(doc, st, comp, x.as_ref(), at)?).ok_or_else(bad)
+        }
         Snap::Axial { pick, face: name, at, x } => {
             let comp = component_of(doc, o.occurrence)?;
             let nf = face::named_face(doc, st, comp, *pick, name)?;
@@ -985,6 +1013,56 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             frame(r.centre, r.z, face::x_axis(doc, st, component_of(doc, o.occurrence)?, x.as_ref(), r.centre)?).ok_or_else(bad)
         }
     }
+}
+
+/// The names of the edges of the component's bodies that meet at the vertex at `pick` (component
+/// coordinates), sorted: at least two, else `None` (no vertex there, or its edges have no names).
+pub fn vertex_edges(doc: &Document, st: &ModelState, component: u64, pick: Vec3) -> Option<Vec<String>> {
+    for b in component_bodies(doc, st, component).into_iter().filter(|b| !b.body.is_mesh()) {
+        let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
+        let p = apply_point(&mat_inverse(&offset)?, pick);
+        let tol = (b.body.size() * 1e-3).max(1e-3);
+        let m = b.mesh();
+        let ends_here = |e: &Vec<Vec3>| [e.first(), e.last()].into_iter().flatten().any(|q| q.dist(p) <= tol);
+        let mut meet: Vec<String> =
+            m.edges.iter().zip(crate::naming::edge_names(b)).filter(|(e, n)| !n.is_empty() && ends_here(e)).map(|(_, n)| n).collect();
+        meet.sort();
+        meet.dedup();
+        if meet.len() >= 2 {
+            return Some(meet);
+        }
+    }
+    None
+}
+
+/// The vertex where the edges `edges` name meet, on a body of the component (component
+/// coordinates; the one nearest `pick` when there are several).
+fn vertex_point(doc: &Document, st: &ModelState, component: u64, pick: Vec3, edges: &[String]) -> Result<Vec3> {
+    let mut best: Option<(f64, Vec3)> = None;
+    for b in component_bodies(doc, st, component).into_iter().filter(|b| !b.body.is_mesh()) {
+        let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
+        let Some(inverse) = mat_inverse(&offset) else { continue };
+        let p = apply_point(&inverse, pick);
+        let m = b.mesh();
+        let ends: Option<Vec<[Vec3; 2]>> = edges
+            .iter()
+            .map(|n| {
+                let hit = crate::name_lookup::locate_edge(b, n, p).ok()?;
+                let pts = m.edges.get(hit.edge)?;
+                Some([*pts.first()?, *pts.last()?])
+            })
+            .collect();
+        let Some(ends) = ends else { continue };
+        let Some((first, rest)) = ends.split_first() else { continue };
+        let tol = |q: Vec3| 1e-6 * (1.0 + q.len());
+        for v in first.iter().copied().filter(|v| rest.iter().all(|e| e.iter().any(|q| q.dist(*v) <= tol(*v)))) {
+            let v = apply_point(&offset, v);
+            if best.is_none_or(|(d, _)| v.dist(pick) < d) {
+                best = Some((v.dist(pick), v));
+            }
+        }
+    }
+    best.map(|(_, v)| v).ok_or_else(|| DocError::reselect(edges.join(", ")))
 }
 
 /// Point `point` of the sketch made by feature `sketch` and the sketch's plane, in the coordinates
