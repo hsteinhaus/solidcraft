@@ -397,6 +397,29 @@ fn a_face_centre_is_the_middle_of_its_edges_control_point_box() {
     assert!(at.dist(want) < 1e-9 && near(z, Vec3::Z), "{at:?} against {want:?}");
 }
 
+/// The control points' box is taken in the face plane's own (u, v) frame, as Fusion takes it
+/// (measured on a box tilted about two axes: a world box was 2.09 mm off). A 40 × 30 × 10 box
+/// with an r13 cut through one corner of its top, turned 30° about X then 40° about Y and moved
+/// to (10, 20, 30): the top's centre is its rectangle's, the cut's arc keeping the box at
+/// ±20 / ±15 in the box's own axes.
+#[test]
+fn a_tilted_face_centre_takes_its_box_in_the_planes_own_frame() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 30, "height": 10, "corner": [-20, -15, -5], "body_name": "Block"}));
+    run(&mut s, "solid.cylinder", json!({"base": [20, 15, -10], "radius": 13, "height": 20, "operation": "cut"}));
+    run(&mut s, "solid.move", json!({"bodies": ["Block"], "axis": [1, 0, 0], "angle": "30 deg"}));
+    run(&mut s, "solid.move", json!({"bodies": ["Block"], "axis": [0, 1, 0], "angle": "40 deg", "translate": [10, 20, 30]}));
+    let (a, b) = (40f64.to_radians(), 30f64.to_radians());
+    let ux = Vec3::new(a.cos(), 0.0, -a.sin());
+    let uy = Vec3::new(b.sin() * a.sin(), b.cos(), b.sin() * a.cos());
+    let uz = ux.cross(uy);
+    let want = Vec3::new(10.0, 20.0, 30.0) + uz * 5.0;
+    let pick = want - ux * 5.0;
+    run(&mut s, "joint.origin", json!({"occurrence": 0, "face": [pick.x, pick.y, pick.z], "name": "Top"}));
+    let (at, z) = origin_frame(&s, "Top").unwrap();
+    assert!(at.dist(want) < 1e-9 && near(z, uz), "{at:?} against {want:?}");
+}
+
 #[test]
 fn a_face_centre_stays_put_when_a_hole_in_its_face_moves_or_goes() {
     // A 200 x 100 plate with a 20 mm hole at `HX` in its top face, and an origin at the top
