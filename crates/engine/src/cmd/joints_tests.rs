@@ -3014,3 +3014,34 @@ fn joint_list_shows_each_origins_kind_and_world_frame() {
     let v = |k: &str| Vec3::new(top["frame"][k][0].as_f64().unwrap(), top["frame"][k][1].as_f64().unwrap(), top["frame"][k][2].as_f64().unwrap());
     assert!(near(v("origin"), Vec3::new(105.0, 5.0, 10.0)) && near(v("z"), Vec3::Z) && v("x").dot(Vec3::Z).abs() < 1e-9, "{top}");
 }
+
+/// A joint origin's z from a construction plane's normal and its x from an origin axis, as
+/// Fusion's axis entities can be. The plane is kept by name, so z turns with it when a parameter
+/// tilts it; origin planes and axes ("XY", "Y") are the component's own.
+#[test]
+fn a_joint_origins_axes_follow_a_construction_plane_and_origin_axes() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name": "len", "expression": "10 mm"}));
+    run(&mut s, "solid.box", json!({"length": "len", "width": 10, "height": 10}));
+    let three = json!({"a": {"vertex": [0, 0, 0]}, "b": {"vertex": [0, 10, 0]}, "c": {"vertex": [10, 0, 10]}, "name": "P"});
+    run(&mut s, "construct.plane.three_points", three);
+    run(&mut s, "joint.origin", json!({"occurrence": 0, "point": [0, 0, 0], "z_axis": {"plane": "P"}, "x_axis": {"axis": "Y"}, "name": "A"}));
+    run(&mut s, "joint.origin", json!({"occurrence": 0, "point": [0, 0, 0], "z_axis": {"plane": "XZ"}, "x_axis": {"axis": "z"}, "name": "B"}));
+    let frame = |s: &Session, name: &str| {
+        let o = s.doc.assembly.origins.iter().find(|o| o.name == name).map(|o| o.origin.clone()).unwrap();
+        let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), &o).unwrap();
+        (Vec3::new(m[0][0], m[0][1], m[0][2]), Vec3::new(m[2][0], m[2][1], m[2][2]))
+    };
+    let check = |s: &Session, len: f64| {
+        let (x, z) = frame(s, "A");
+        let want = Vec3::new(10.0, 0.0, -len).normalized().unwrap();
+        assert!((z.dot(want).abs() - 1.0).abs() < 1e-9 && (x.dot(Vec3::Y).abs() - 1.0).abs() < 1e-9, "len {len}: x {x:?} z {z:?}");
+    };
+    check(&s, 10.0);
+    let (x, z) = frame(&s, "B");
+    assert!((z.dot(Vec3::Y).abs() - 1.0).abs() < 1e-9 && (x.dot(Vec3::Z).abs() - 1.0).abs() < 1e-9, "B: x {x:?} z {z:?}");
+    run(&mut s, "parameters.change", json!({"name": "len", "expression": "20 mm"}));
+    check(&s, 20.0);
+    check(&Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap()), 20.0);
+    assert!(s.execute("joint.origin", &json!({"occurrence": 0, "point": [0, 0, 0], "z_axis": {"plane": "Nope"}})).is_err());
+}
