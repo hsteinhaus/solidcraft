@@ -2762,3 +2762,41 @@ fn new_joints_generate_type_prefixed_names_or_keep_custom_name() {
     );
     assert_eq!(r3["name"], "CustomRigid");
 }
+
+/// A joint origin on a sketch point, as a Fusion joint origin often is: at the point, z along
+/// the sketch's normal and x along its x. It is kept by the sketch and the point's id, so it
+/// follows the point when a parameter moves it, in a component placed away from the origin.
+#[test]
+fn a_joint_origin_on_a_sketch_point_follows_the_point() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name": "px", "expression": "10 mm"}));
+    run(&mut s, "component.create", json!({"name": "Part"}));
+    run(&mut s, "sketch.create", json!({"plane": "XZ", "name": "S"}));
+    run(&mut s, "sketch.point", json!({"point": [10, 5], "id": "p"}));
+    run(&mut s, "sketch.dimension", json!({"entities": ["origin", "p"], "type": "horizontal", "value": "px"}));
+    run(&mut s, "sketch.dimension", json!({"entities": ["origin", "p"], "type": "vertical", "value": "5 mm"}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "occurrence.move", json!({"occurrence": "Part:1", "translate": [100, 0, 0], "capture": true, "move_grounded": true}));
+    run(&mut s, "joint.origin", json!({"sketch": "S", "point": "p", "name": "O"}));
+    let check = |s: &Session, x: f64| {
+        let o = s.doc.assembly.origins.iter().find(|o| o.name == "O").map(|o| o.origin.clone()).unwrap();
+        let st = s.model.state();
+        let ss = st.sketches.iter().find(|ss| ss.name == "S").unwrap();
+        let want = ss.plane.to_world(solidcore_record::Vec2::new(x, 5.0));
+        let m = solidcraft_doc::joints::resolve_origin(&s.doc, &st, &o).unwrap();
+        let (at, z, xa) = (Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(m[2][0], m[2][1], m[2][2]), Vec3::new(m[0][0], m[0][1], m[0][2]));
+        assert!(near(at, want) && near(z, ss.plane.normal()) && near(xa, ss.plane.x), "{m:?} against {want:?}");
+        // In the world, where the part is placed.
+        assert!(near(place(s, "Part", at), want + Vec3::new(100.0, 0.0, 0.0)), "{:?}", place(s, "Part", at));
+    };
+    check(&s, 10.0);
+    run(&mut s, "parameters.change", json!({"name": "px", "expression": "25 mm"}));
+    check(&s, 25.0);
+    // Saved and opened again, it is the same point.
+    let back = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    check(&back, 25.0);
+    for bad in [json!({"sketch": "S", "point": "nope"}), json!({"sketch": "Nope", "point": "p"})] {
+        assert!(s.execute("joint.origin", &bad).is_err(), "{bad}");
+    }
+}
