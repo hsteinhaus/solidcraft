@@ -2937,3 +2937,37 @@ fn a_joint_origin_at_a_vertex_follows_the_corner() {
     assert!(near(frame(&back, "V").0, Vec3::new(25.0, 20.0, 30.0)), "{:?}", frame(&back, "V"));
     assert!(s.execute("joint.origin", &json!({"occurrence": "Part", "vertex": [12, 10, 30]})).is_err(), "no corner there");
 }
+
+/// A joint origin whose z and x come from other geometry, as Fusion's z and x axis entities: z
+/// along a straight edge, x toward a face's normal (laid square to z). Both are kept by name, so
+/// the frame turns with the edge when a parameter tilts it.
+#[test]
+fn a_joint_origins_axes_follow_the_edge_and_face_they_name() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name": "h", "expression": "10 mm"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "T"}));
+    run(&mut s, "sketch.line", json!({"points": [[0, 0], [20, 0], [20, 10], [0, 0]]}));
+    run(&mut s, "sketch.constraint.coincident", json!({"a": "l1.start", "b": "origin"}));
+    run(&mut s, "sketch.constraint.horizontal_vertical", json!({"line": "l1", "mode": "horizontal"}));
+    run(&mut s, "sketch.constraint.horizontal_vertical", json!({"line": "l2", "mode": "vertical"}));
+    run(&mut s, "sketch.dimension", json!({"entities": ["l1"], "value": "20 mm"}));
+    run(&mut s, "sketch.dimension", json!({"entities": ["l2"], "value": "h"}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "T", "distance": 5}));
+    let given = json!({"occurrence": 0, "point": [0, 0, 0], "z_axis": {"edge": [10, 5, 5]}, "x_axis": {"face": [10, 0, 2.5]}, "name": "A"});
+    run(&mut s, "joint.origin", given);
+    let check = |s: &Session, h: f64| {
+        let o = s.doc.assembly.origins.iter().find(|o| o.name == "A").map(|o| o.origin.clone()).unwrap();
+        let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), &o).unwrap();
+        let (x, z) = (Vec3::new(m[0][0], m[0][1], m[0][2]), Vec3::new(m[2][0], m[2][1], m[2][2]));
+        let along = Vec3::new(20.0, h, 0.0).normalized().unwrap();
+        assert!((z.dot(along).abs() - 1.0).abs() < 1e-9, "h {h}: z {z:?}");
+        assert!(x.dot(z).abs() < 1e-9 && x.dot(Vec3::new(0.0, -1.0, 0.0)) > 0.1, "h {h}: x {x:?}");
+    };
+    check(&s, 10.0);
+    run(&mut s, "parameters.change", json!({"name": "h", "expression": "25 mm"}));
+    check(&s, 25.0);
+    check(&Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap()), 25.0);
+    let wrong = json!({"occurrence": 0, "point": [0, 0, 0], "z_axis": {"edge": [50, 50, 50]}});
+    assert!(s.execute("joint.origin", &wrong).is_err());
+}
