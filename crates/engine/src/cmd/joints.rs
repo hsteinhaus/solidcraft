@@ -462,9 +462,10 @@ fn origin_snap_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointO
         let occurrence = occurrence_id(s, v.get("occurrence"), cmd)?;
         let o = JointOrigin { occurrence, snap: Snap::Linked { origin: name.to_string() } };
         joints::resolve_origin(&s.doc, &s.model.state(), &o).map_err(|e| {
-            let known: Vec<&str> =
-                s.doc.links.get(&component_of(s, occurrence)).map(|l| l.origins.iter().map(|o| o.name.as_str()).collect()).unwrap_or_default();
-            bad(cmd, format!("{e} (its design has: {})", if known.is_empty() { "none".to_string() } else { known.join(", ") }))
+            let comp = component_of(s, occurrence);
+            let mut known: Vec<&str> = s.doc.links.get(&comp).map(|l| l.origins.iter().map(|o| o.name.as_str()).collect()).unwrap_or_default();
+            known.extend(s.doc.assembly.origins.iter().filter(|n| component_of(s, n.origin.occurrence) == comp).map(|n| n.name.as_str()));
+            bad(cmd, format!("{e} (the component has: {})", if known.is_empty() { "none".to_string() } else { known.join(", ") }))
         })?;
         return Ok(o);
     }
