@@ -2910,3 +2910,30 @@ fn a_joint_origin_at_a_round_faces_axis_key_point_follows_the_face() {
         assert!(s.execute("joint.origin", &bad).is_err(), "{bad}");
     }
 }
+
+/// A joint origin at a body's vertex, as Fusion's is: at the corner, found again by the names of
+/// the edges that meet there, so it follows the corner when a parameter moves it. z is +Z of the
+/// component unless given.
+#[test]
+fn a_joint_origin_at_a_vertex_follows_the_corner() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name": "len", "expression": "10 mm"}));
+    run(&mut s, "component.create", json!({"name": "Part"}));
+    run(&mut s, "solid.box", json!({"length": "len", "width": 20, "height": 30}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "joint.origin", json!({"occurrence": "Part", "vertex": [10, 20, 30], "name": "V"}));
+    run(&mut s, "joint.origin", json!({"occurrence": "Part", "vertex": [10, 20, 30], "z": [1, 0, 0], "name": "W"}));
+    let frame = |s: &Session, name: &str| {
+        let o = s.doc.assembly.origins.iter().find(|o| o.name == name).map(|o| o.origin.clone()).unwrap();
+        let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), &o).unwrap();
+        (Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(m[2][0], m[2][1], m[2][2]))
+    };
+    let (at, z) = frame(&s, "V");
+    assert!(near(at, Vec3::new(10.0, 20.0, 30.0)) && near(z, Vec3::Z), "{at:?} {z:?}");
+    assert!(near(frame(&s, "W").1, Vec3::X), "{:?}", frame(&s, "W"));
+    run(&mut s, "parameters.change", json!({"name": "len", "expression": "25 mm"}));
+    assert!(near(frame(&s, "V").0, Vec3::new(25.0, 20.0, 30.0)), "{:?}", frame(&s, "V"));
+    let back = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert!(near(frame(&back, "V").0, Vec3::new(25.0, 20.0, 30.0)), "{:?}", frame(&back, "V"));
+    assert!(s.execute("joint.origin", &json!({"occurrence": "Part", "vertex": [12, 10, 30]})).is_err(), "no corner there");
+}
