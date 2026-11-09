@@ -1912,8 +1912,10 @@ fn placement_digest(doc: &Document, f: &Feature, st: Option<&ModelState>) -> u64
     }
     for c in &reads.components {
         c.hash(&mut h);
-        // Its own component is read in its own frame.
-        if *c != f.component {
+        // Its own component is read in its own frame; one a sketch pinned, in that frame.
+        if let Some(pinned) = f.link_frames.get(c).filter(|_| *c != f.component) {
+            hash_placement(pinned, &mut h);
+        } else if *c != f.component {
             hash_placement(&crate::mat_mul(&inverse, &doc.component_transform(*c)), &mut h);
         }
     }
@@ -7504,6 +7506,7 @@ fn eval_feature(
                 None if !plane_reads_geometry(plane) && sketch.links.is_empty() => std::borrow::Cow::Borrowed(st),
                 None => state_in_frame(doc, st, f.component)?,
             };
+            let fst = with_pinned_link_frames(doc, st, fst, f)?;
             // A further placement a link reads is placed in its frame too (#9957).
             let named: Vec<&str> = sketch.links.iter().flat_map(|l| l.source.bodies()).collect();
             let fst = match anchor.map(|anchor| anchor.author_frame(doc, f.component)) {
@@ -8747,6 +8750,44 @@ pub fn state_in_frame_at<'a>(doc: &Document, st: &'a ModelState, comp: u64, fram
         }
     }
     Ok(Cow::Owned(out))
+}
+
+/// `framed` (the model a sketch's links read) with the bodies and sketches of each component the
+/// sketch pinned a frame for (`Feature::link_frames`) placed through that frame, from the model
+/// `st` itself, instead of through the placements now.
+fn with_pinned_link_frames<'a>(
+    doc: &Document,
+    st: &ModelState,
+    framed: std::borrow::Cow<'a, ModelState>,
+    f: &Feature,
+) -> Result<std::borrow::Cow<'a, ModelState>> {
+    let pin = |c: u64| f.link_frames.get(&c).filter(|_| c != f.component);
+    if f.link_frames.is_empty() {
+        return Ok(framed);
+    }
+    let mut out = framed.into_owned();
+    for b in &st.bodies {
+        let Some(m) = pin(doc.model_body_component(b)) else { continue };
+        let m = doc.model_body_offset(b).map_or(*m, |offset| crate::mat_mul(m, offset));
+        let moved = st.body_in_frame(b, &m).map_err(|e| DocError::Invalid(format!("body `{}` cannot be moved into the frame: {e}", b.name)))?;
+        if let Some(slot) = out.bodies.iter_mut().find(|slot| slot.name == b.name) {
+            *slot = moved;
+        }
+    }
+    for raw in &st.sketches {
+        let Some(m) = pin(doc.feature(raw.feature).map_or(0, |g| g.component)) else { continue };
+        let Some(slot) = out.sketches.iter_mut().find(|slot| slot.feature == raw.feature) else { continue };
+        let slot = Arc::make_mut(slot);
+        slot.plane = placed_plane(m, &raw.plane)?;
+        // Its own wires through the pin; world wires stay where the frame put them.
+        for (wire, from) in slot.sketch.wires.iter_mut().zip(&raw.sketch.wires) {
+            if from.space == solidcraft_sketch::WireSpace::Component {
+                *wire = from.clone();
+                map_wire(wire, m);
+            }
+        }
+    }
+    Ok(std::borrow::Cow::Owned(out))
 }
 
 /// `framed` (the model `st` in the frame that `frame` places in the world) with the further

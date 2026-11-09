@@ -835,6 +835,25 @@ pub(super) fn face_contains(m: &solidcraft_geom::Mesh, tris: &[usize], p: Vec3, 
     })
 }
 
+/// `link_frames`: by source component (id or name), the frame its geometry is read through by
+/// the sketch's links, pinned (row-major rigid matrix, as occurrence.move's `matrix`: the sketch's
+/// component from the source's). `None` when not given.
+fn link_frames(s: &Session, p: &Value, cmd: &str) -> Result<Option<std::collections::BTreeMap<u64, solidcraft_doc::Mat>>> {
+    use super::component::matrix;
+    match p.get("link_frames") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Object(frames)) => frames
+            .iter()
+            .map(|(key, m)| {
+                let c = s.doc.find_component(key).ok_or_else(|| bad(cmd, format!("`link_frames`: no component `{key}`")))?;
+                Ok((c, matrix::rigid(m, matrix::TOLERANCE, cmd)?))
+            })
+            .collect::<Result<_>>()
+            .map(Some),
+        Some(_) => Err(bad(cmd, "`link_frames` must map components to matrices")),
+    }
+}
+
 fn create_sketch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.create";
     // These name the plane, so they belong inside `plane`. Next to it they were ignored and the
@@ -934,10 +953,12 @@ pub(super) fn create_sketch_with_plane(s: &mut Session, p: &Value, plane: PlaneR
     if !face::is_face(p) {
         super::component::to_active_frame(s, &mut kind);
     }
+    let frames = link_frames(s, p, "sketch.create")?.unwrap_or_default();
     let id = s.doc_mut().add_feature(kind, name)?;
     let comp = s.active_component;
     if let Some(f) = s.doc_mut().feature_mut(id) {
         f.component = comp;
+        f.link_frames = frames;
     }
     s.active_sketch = Some(id);
     s.sketch_entry = Some(SketchEntry { sketch: id, ..before });
@@ -991,6 +1012,12 @@ fn edit_sketch(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("sketch.edit", format!("`{key}` is not a sketch")));
     }
     let (id, name, component) = (f.id, f.name.clone(), f.component);
+    if let Some(frames) = link_frames(s, p, "sketch.edit")?
+        && let Some(f) = s.doc_mut().feature_mut(id)
+    {
+        f.link_frames = frames;
+    }
+    let Some(f) = s.doc.feature(id) else { return Err(bad("sketch.edit", format!("no sketch `{key}`"))) };
     let authored_path = match &f.kind {
         FeatureKind::Sketch { plane, .. } => face::anchor(plane).map(|anchor| anchor.author_path.clone()),
         _ => None,
