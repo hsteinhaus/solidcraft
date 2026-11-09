@@ -2879,3 +2879,34 @@ fn joint_origins_of_a_linked_design_are_usable_by_name() {
     assert!(near(at(&s).0, Vec3::new(110.0, 10.0, 25.0)), "{:?}", at(&s).0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A joint origin at a key point of a round face's axis, as Fusion's start, middle and end of a
+/// cylindrical face: on the axis at the face's start or end along it, or halfway, z along the
+/// axis. It is kept by the face's name, so it follows the face when a parameter stretches it.
+#[test]
+fn a_joint_origin_at_a_round_faces_axis_key_point_follows_the_face() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name": "h", "expression": "20 mm"}));
+    run(&mut s, "component.create", json!({"name": "Part"}));
+    run(&mut s, "solid.cylinder", json!({"base": [0, 0, 0], "radius": 5, "height": "h"}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    for (at, name) in [("start", "S"), ("middle", "M"), ("end", "E")] {
+        run(&mut s, "joint.origin", json!({"occurrence": "Part", "cylinder": [5, 0, 7], "at": at, "name": name}));
+    }
+    let check = |s: &Session, h: f64| {
+        for (name, want) in [("S", 0.0), ("M", h / 2.0), ("E", h)] {
+            let o = s.doc.assembly.origins.iter().find(|o| o.name == name).map(|o| o.origin.clone()).unwrap();
+            let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), &o).unwrap();
+            let (at, z) = (Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(m[2][0], m[2][1], m[2][2]));
+            assert!(near(at, Vec3::new(0.0, 0.0, want)) && (z.dot(Vec3::Z).abs() - 1.0).abs() < 1e-9, "{name} at h {h}: {at:?} {z:?}");
+        }
+    };
+    check(&s, 20.0);
+    run(&mut s, "parameters.change", json!({"name": "h", "expression": "30 mm"}));
+    check(&s, 30.0);
+    check(&Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap()), 30.0);
+    for bad in [json!({"occurrence": "Part", "cylinder": [5, 0, 7], "at": "top"}), json!({"occurrence": "Part", "cylinder": [0, 0, 30], "at": "end"})]
+    {
+        assert!(s.execute("joint.origin", &bad).is_err(), "{bad}");
+    }
+}
