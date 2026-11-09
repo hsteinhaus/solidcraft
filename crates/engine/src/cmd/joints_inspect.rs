@@ -151,6 +151,16 @@ fn references(doc: &Document, snap: &Snap) -> Vec<Value> {
             }
         }
         Snap::Offset { snap, .. } => return references(doc, snap),
+        Snap::Axes { snap, z, x } => {
+            out.extend(references(doc, snap));
+            for (role, r) in [("z", z), ("x", x)] {
+                match r {
+                    Some(solidcraft_doc::joints::AxisRef::Edge { edge, .. }) => out.push(with_role(role, edge_ref(doc, edge))),
+                    Some(solidcraft_doc::joints::AxisRef::Face { face: f, .. }) => out.push(with_role(role, face_ref(doc, f))),
+                    _ => {}
+                }
+            }
+        }
         Snap::Frame { .. } | Snap::Point { .. } | Snap::SketchPoint { .. } | Snap::Linked { .. } => {}
         Snap::Axial { face: f, .. } => out.push(with_role("face", face_ref(doc, f))),
         Snap::Vertex { edges, .. } => out.extend(edges.iter().map(|e| with_role("edge", edge_ref(doc, e)))),

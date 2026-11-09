@@ -26,7 +26,7 @@ mod inspect;
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("joint.origin", "Joint Origin", joint_origin).at("SOLID", "CREATE").icon("joint_origin").params(
-        "name?, occurrence?: id|name (default: from the pick, or the named face's component), offset?: {x?, y?, z?, angle?, flip?} (lengths and an angle, numbers or expressions, in the origin's own frame: moved along its x, y, z, turned about z, then z flipped) on any origin; occurrence: id|name, origin: \"<name>\" (a joint origin the placed linked design defines, as joint.list's linked_origins names it; follows that design when its link is read again) | vertex: [x,y,z] (a corner, found again by its edges' names; z?: [x,y,z] default +Z, x? as for a face) | cylinder: [x,y,z] (a point on a round face), at: start|middle|end (on its axis at the face's start or end along it, or halfway; z along the axis; follows the face) | sketch: name|id, point: \"<point id>\" (a sketch point of the component: z along the sketch's normal, x along its x or `x`; follows the point) | face: [x,y,z] | \"<name>\" (centre of a planar face) | circle: [x,y,z] | \"<name>\" (centre of a round end: a point on its wall or rim, the end's centre, or the round face's name as model.faces lists it) | edge: [x,y,z] (a point on an edge of a planar face: the edge's middle, z out of the face, y into it; on?: [x,y,z] a point on the face (default: the larger planar face beside the edge); corner?: [x,y,z] near one end: the corner there, x and y along its two edges into the face; found again by name, so it follows the face as it changes size; z?: [x,y,z] the frame's z instead of the face's normal, along the edge when it runs that way, x chosen from z: an edge or corner picked as it is, kept as a point where it can't be found by name) | point: [x,y,z], z?: [x,y,z]; a circle's z?: [x,y,z] (a round edge's centre with the way out of it: its end by name when that is the frame it shows, else a point there); body?: the named face's body; end?: \"<name>\" (a circle's end: the face across its rim there; default the end nearer the pick); x?: [x,y,z] (a direction, world) | \"<face name>\" | {face: [x,y,z]} (the frame's x: a direction, a plane's normal, or the way to another hole's axis; keeps a round origin's turn; a point's x is a direction, laid square to its z, default: chosen from z alone). Faces are kept by name: the origin follows its face, and a circle its end, when the design changes",
+        "name?, occurrence?: id|name (default: from the pick, or the named face's component), z_axis?, x_axis?: [x,y,z] | {edge: [x,y,z]} (a straight edge, along it) | {face: [x,y,z]} (a plane's normal, a round face's axis) | {axis: name} on any origin, kept by name (z from z_axis, x toward x_axis laid square to it); offset?: {x?, y?, z?, angle?, flip?} (lengths and an angle, numbers or expressions, in the origin's own frame: moved along its x, y, z, turned about z, then z flipped) on any origin; occurrence: id|name, origin: \"<name>\" (a joint origin the placed linked design defines, as joint.list's linked_origins names it; follows that design when its link is read again) | vertex: [x,y,z] (a corner, found again by its edges' names; z?: [x,y,z] default +Z, x? as for a face) | cylinder: [x,y,z] (a point on a round face), at: start|middle|end (on its axis at the face's start or end along it, or halfway; z along the axis; follows the face) | sketch: name|id, point: \"<point id>\" (a sketch point of the component: z along the sketch's normal, x along its x or `x`; follows the point) | face: [x,y,z] | \"<name>\" (centre of a planar face) | circle: [x,y,z] | \"<name>\" (centre of a round end: a point on its wall or rim, the end's centre, or the round face's name as model.faces lists it) | edge: [x,y,z] (a point on an edge of a planar face: the edge's middle, z out of the face, y into it; on?: [x,y,z] a point on the face (default: the larger planar face beside the edge); corner?: [x,y,z] near one end: the corner there, x and y along its two edges into the face; found again by name, so it follows the face as it changes size; z?: [x,y,z] the frame's z instead of the face's normal, along the edge when it runs that way, x chosen from z: an edge or corner picked as it is, kept as a point where it can't be found by name) | point: [x,y,z], z?: [x,y,z]; a circle's z?: [x,y,z] (a round edge's centre with the way out of it: its end by name when that is the frame it shows, else a point there); body?: the named face's body; end?: \"<name>\" (a circle's end: the face across its rim there; default the end nearer the pick); x?: [x,y,z] (a direction, world) | \"<face name>\" | {face: [x,y,z]} (the frame's x: a direction, a plane's normal, or the way to another hole's axis; keeps a round origin's turn; a point's x is a direction, laid square to its z, default: chosen from z alone). Faces are kept by name: the origin follows its face, and a circle its end, when the design changes",
     ),
     CommandSpec::new("joint.create", "Joint", joint).at("SOLID", "ASSEMBLE").icon("joint").key("J").params(
         "type: rigid|revolute|slider|cylindrical|pin_slot|planar|ball, or a relation: parallel|perpendicular|angle|point_on_plane|point_on_line|line_on_plane \
@@ -360,11 +360,45 @@ pub(crate) fn occurrence_at(s: &Session, p: Vec3) -> Option<u64> {
 /// A joint origin from parameters: a named origin, or a snap given in world coordinates.
 pub(crate) fn origin_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointOrigin> {
     let mut o = origin_snap_param(s, v, cmd)?;
+    let given = |k: &str| v.and_then(|v| v.get(k)).filter(|x| !x.is_null());
+    if given("z_axis").is_some() || given("x_axis").is_some() {
+        let t = if o.occurrence == 0 { solidcraft_doc::IDENTITY } else { joints::occurrence_world(&s.doc, o.occurrence) };
+        let inv = solidcraft_doc::mat_inverse(&t).ok_or_else(|| bad(cmd, "occurrence transform"))?;
+        let component = component_of(s, o.occurrence);
+        let z = given("z_axis").map(|r| axis_ref_param(s, r, component, &inv, "z_axis", cmd)).transpose()?;
+        let x = given("x_axis").map(|r| axis_ref_param(s, r, component, &inv, "x_axis", cmd)).transpose()?;
+        o.snap = Snap::Axes { snap: Box::new(o.snap), z, x };
+        joints::resolve_origin(&s.doc, &s.model.state(), &o).map_err(|e| bad(cmd, e.to_string()))?;
+    }
     if let Some(given) = v.and_then(|v| v.get("offset")).filter(|o| !o.is_null()) {
         o.snap = offset_param(s, o.snap, given, cmd)?;
         joints::resolve_origin(&s.doc, &s.model.state(), &o).map_err(|e| bad(cmd, e.to_string()))?;
     }
     Ok(o)
+}
+
+/// `z_axis` or `x_axis`: a direction [x, y, z], {edge: [x, y, z]} (a straight edge, along it),
+/// {face: [x, y, z]} (a plane's normal, a round face's axis) or {axis: name} (a construction
+/// axis), kept by the edge's, face's or axis's name.
+fn axis_ref_param(s: &Session, r: &Value, component: u64, inv: &solidcraft_doc::Mat, what: &str, cmd: &str) -> Result<joints::AxisRef> {
+    let wrong = || bad(cmd, format!("`{what}` is [x, y, z], {{edge: [x, y, z]}}, {{face: [x, y, z]}} or {{axis: name}}"));
+    let st = s.model.state();
+    if let Some(d) = vec3(r) {
+        return d.normalized().map(|d| joints::AxisRef::Dir(solidcraft_doc::apply_vector(inv, d))).ok_or_else(wrong);
+    }
+    if let Some(axis) = r.get("axis").and_then(Value::as_str) {
+        return Ok(joints::AxisRef::Axis { axis: axis.to_string() });
+    }
+    let local = |k: &str| r.get(k).and_then(vec3).map(|p| solidcraft_doc::apply_point(inv, p));
+    if let Some(pick) = local("edge") {
+        let edge = joints::edge_name_at(&s.doc, &st, component, pick).ok_or_else(|| bad(cmd, format!("`{what}`: no named edge there")))?;
+        return Ok(joints::AxisRef::Edge { edge, pick });
+    }
+    if let Some(pick) = local("face") {
+        let face = joints::face_name_at(&s.doc, &st, component, pick, false).ok_or_else(|| bad(cmd, format!("`{what}`: no named face there")))?;
+        return Ok(joints::AxisRef::Face { face, pick });
+    }
+    Err(wrong())
 }
 
 /// `offset: {x?, y?, z?, angle?, flip?}`: `base` moved in its own frame (lengths and an angle,
