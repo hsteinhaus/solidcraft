@@ -2800,3 +2800,34 @@ fn a_joint_origin_on_a_sketch_point_follows_the_point() {
         assert!(s.execute("joint.origin", &bad).is_err(), "{bad}");
     }
 }
+
+/// A joint origin's own transform, as Fusion keeps one on every joint origin: offsets along its
+/// x, y and z, a turn about its z and a flip of z (a half turn about x), in that order and in
+/// the origin's own frame. Expressions follow their parameters, through a rename too.
+#[test]
+fn a_joint_origin_offset_follows_its_parameters() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name": "dy", "expression": "3 mm"}));
+    let base = json!({"occurrence": 0, "point": [1, 2, 3], "z": [0, 0, 1], "x": [1, 0, 0]});
+    let mut given = base.clone();
+    given["offset"] = json!({"x": 10, "y": "dy", "z": "5 mm", "angle": 90, "flip": true});
+    given["name"] = json!("O");
+    run(&mut s, "joint.origin", given);
+    let frame = |s: &Session| {
+        let o = s.doc.assembly.origins.iter().find(|o| o.name == "O").map(|o| o.origin.clone()).unwrap();
+        let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), &o).unwrap();
+        (Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(m[0][0], m[0][1], m[0][2]), Vec3::new(m[2][0], m[2][1], m[2][2]))
+    };
+    // Moved by (10, 3, 5), x turned a quarter about z onto +Y, z flipped (x stays).
+    let (at, x, z) = frame(&s);
+    assert!(near(at, Vec3::new(11.0, 5.0, 8.0)) && near(x, Vec3::Y) && near(z, -Vec3::Z), "{at:?} {x:?} {z:?}");
+    run(&mut s, "parameters.change", json!({"name": "dy", "expression": "7 mm"}));
+    assert!(near(frame(&s).0, Vec3::new(11.0, 9.0, 8.0)), "{:?}", frame(&s).0);
+    run(&mut s, "parameters.rename", json!({"name": "dy", "new_name": "lift"}));
+    assert!(near(frame(&s).0, Vec3::new(11.0, 9.0, 8.0)), "{:?}", frame(&s).0);
+    let back = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert!(near(frame(&back).0, Vec3::new(11.0, 9.0, 8.0)), "{:?}", frame(&back).0);
+    let mut wrong = base;
+    wrong["offset"] = json!({"x": "nope_param"});
+    assert!(s.execute("joint.origin", &wrong).is_err());
+}
