@@ -61,6 +61,31 @@ pub(crate) fn surface_of(b: &Brep, face: usize) -> Option<FaceSurface> {
     })
 }
 
+/// Whether faces `f` and `g` of `b` are one surface cut along a seam where two arcs of a face
+/// beside them meet (the arcs' vertices `a` and `c`): both on the same analytic surface and an
+/// edge between them through the arcs' shared vertex. Fusion holds such faces as one.
+fn seam_between(b: &Body, f: Option<u32>, g: Option<u32>, a: [u32; 2], c: [u32; 2], tol: f64) -> bool {
+    let (Some(f), Some(g)) = (f, g) else { return false };
+    let Some(v) = a.iter().find(|v| c.contains(v)) else { return false };
+    let (Some(sf), Some(sg)) = (face_surface(b, f as usize), face_surface(b, g as usize)) else { return false };
+    let near = |p: Vec3, q: Vec3| p.dist(q) <= tol;
+    let along = |p: UnitVec3, q: UnitVec3| p.dot(q).abs() > 1.0 - 1e-12;
+    let one = match (sf, sg) {
+        (FaceSurface::Cylinder { origin: o, axis: a, radius: r }, FaceSurface::Cylinder { origin: p, axis: c, radius: s }) => {
+            along(a, c) && (r - s).abs() <= tol && near((p - o) - a * (p - o).dot(a), Vec3::new(0.0, 0.0, 0.0))
+        }
+        (FaceSurface::Cone { apex: o, axis: a, half_angle: h }, FaceSurface::Cone { apex: p, axis: c, half_angle: k }) => {
+            near(o, p) && a.dot(c) > 1.0 - 1e-12 && (h - k).abs() <= 1e-12
+        }
+        (FaceSurface::Sphere { center: o, radius: r }, FaceSurface::Sphere { center: p, radius: s }) => near(o, p) && (r - s).abs() <= tol,
+        (FaceSurface::Torus { center: o, axis: a, major: r, minor: m }, FaceSurface::Torus { center: p, axis: c, major: s, minor: n }) => {
+            near(o, p) && along(a, c) && (r - s).abs() <= tol && (m - n).abs() <= tol
+        }
+        _ => false,
+    };
+    one && b.record().edges.iter().any(|e| e.vertices.contains(v) && [f, g].iter().all(|&h| e.uses.iter().any(|u| u.face == h)))
+}
+
 /// The centre Fusion gives planar face `face` of `b` as its centre key point: the middle of the
 /// axis-aligned box of its edges' NURBS control points, every loop's (measured in Fusion on faces
 /// with and without holes, to 2e-12 mm), laid onto the face's plane. Edges as Fusion holds them
@@ -78,23 +103,20 @@ pub fn face_control_box_centre(b: &Body, face: usize) -> Option<Vec3> {
     let f = record.faces.get(face)?;
     let mut pts = Vec::new();
     let mut take = |p: Vec3| pts.push(p);
+    // Arcs of one circle that meet end to end along the same other face are one edge in Fusion
+    // (its periodic faces have no seam vertex): joined here, so their spans are the whole arc's.
+    let tol = (b.size() * 1e-9).max(1e-9);
+    let mut arcs: Vec<(EdgeCircle, Option<u32>, [u32; 2])> = Vec::new();
     for l in &f.loops {
         let Loop::Edges { edges } = l else { continue };
         for oe in edges {
             let i = oe.edge as usize;
             let e = record.edges.get(i)?;
-            if let Some(c) = edge_circle(b, i) {
-                let x = (c.start - c.center).normalized()?;
-                let y = c.axis.cross(x);
-                let n = (c.angle / std::f64::consts::FRAC_PI_2 - 1e-9).ceil().max(1.0);
-                let step = c.angle / n;
-                let at = |t: f64, r: f64| c.center + (x * t.cos() + y * t.sin()) * r;
-                for k in 0..n as usize {
-                    let t0 = step * k as f64;
-                    take(at(t0, c.radius));
-                    take(at(t0 + 0.5 * step, c.radius / (0.5 * step).cos()));
-                    take(at(t0 + step, c.radius));
+            if let Some(mut c) = edge_circle(b, i) {
+                if let Some(axis) = arcs.first().map(|(a, _, _)| a.axis).filter(|a| a.dot(c.axis) < 0.0) {
+                    (c.start, c.end, c.axis) = (c.end, c.start, axis);
                 }
+                arcs.push((c, e.uses.iter().map(|u| u.face).find(|&g| g as usize != face), e.vertices));
                 continue;
             }
             match e.parameters() {
@@ -109,6 +131,44 @@ pub fn face_control_box_centre(b: &Body, face: usize) -> Option<Vec3> {
                 }
                 _ => return None,
             }
+        }
+    }
+    let same =
+        |a: &EdgeCircle, c: &EdgeCircle| a.center.dist(c.center) <= tol && (a.radius - c.radius).abs() <= tol && a.axis.dot(c.axis) > 1.0 - 1e-12;
+    let mut k = 0;
+    while k < arcs.len() {
+        // an arc that ends where another of its circle starts, along the same face or across a seam, takes it on
+        let next = (0..arcs.len()).find(|&j| {
+            j != k
+                && same(&arcs[j].0, &arcs[k].0)
+                && arcs[k].0.end.dist(arcs[j].0.start) <= tol
+                && arcs[k].0.angle + arcs[j].0.angle < std::f64::consts::TAU - 1e-9
+                && (arcs[j].1 == arcs[k].1 || seam_between(b, arcs[k].1, arcs[j].1, arcs[k].2, arcs[j].2, tol))
+        });
+        match next {
+            Some(j) => {
+                let (c, _, v) = arcs.remove(j);
+                if j < k {
+                    k -= 1;
+                }
+                arcs[k].0.end = c.end;
+                arcs[k].0.angle += c.angle;
+                arcs[k].2 = v;
+            }
+            None => k += 1,
+        }
+    }
+    for (c, _, _) in &arcs {
+        let x = (c.start - c.center).normalized()?;
+        let y = c.axis.cross(x);
+        let n = (c.angle / std::f64::consts::FRAC_PI_2 - 1e-9).ceil().max(1.0);
+        let step = c.angle / n;
+        let at = |t: f64, r: f64| c.center + (x * t.cos() + y * t.sin()) * r;
+        for k in 0..n as usize {
+            let t0 = step * k as f64;
+            take(at(t0, c.radius));
+            take(at(t0 + 0.5 * step, c.radius / (0.5 * step).cos()));
+            take(at(t0 + step, c.radius));
         }
     }
     if pts.is_empty() {
