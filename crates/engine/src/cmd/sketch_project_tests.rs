@@ -1764,6 +1764,34 @@ fn a_second_placements_face_and_edge_project_where_it_is_placed() {
     check(&Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap()), 15.0);
 }
 
+/// A link to a placement whose name no longer finds a body (the placement deleted, its
+/// component placed twice more) asks for its edge to be picked again: the edge's name is every
+/// placement's, so finding it on the one body left with that name took the first placement's.
+#[test]
+fn a_projection_of_a_placement_gone_is_never_taken_from_another() {
+    let mut s = Session::default();
+    let part = run(&mut s, "component.create", json!({"name":"Part"}));
+    run(&mut s, "solid.box", json!({"length":20,"width":20,"height":10,"body_name":"Block"}));
+    run(&mut s, "component.activate", json!({"component":0}));
+    let copy = run(&mut s, "occurrence.copy", json!({"component":part["component"],"translate":[50,0,5]}))["occurrence"].clone();
+    run(&mut s, "occurrence.copy", json!({"component":part["component"],"translate":[100,0,5]}));
+    let sketch = run(&mut s, "sketch.create", json!({"plane":"XY","offset":15}))["sketch"].as_u64().unwrap();
+    run(&mut s, "sketch.project", json!({"refs":[{"body":"Block (Part:2)","edge":[60,20,15]}]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let refused = s.execute("selection.delete", &json!({"occurrences":[copy]}));
+    if let Err(e) = &refused {
+        assert!(e.to_string().contains("reselect"), "{e}");
+        return;
+    }
+    let rebuilt = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    let error = rebuilt.model.result(sketch).and_then(|r| r.error.clone());
+    assert!(
+        error.as_deref().is_some_and(|e| e.contains("reselect")),
+        "{error:?}: {:?}",
+        rebuilt.model.state().sketch(sketch).map(|ss| &ss.sketch.links)
+    );
+}
+
 /// A second placement moved into another component is named through it ("Block
 /// (Holder:1/Part:2)"): a sketch projecting it follows the new name. Kept by the old one, the
 /// link found the edge on the one body left with it, the first placement, once the sketch was
