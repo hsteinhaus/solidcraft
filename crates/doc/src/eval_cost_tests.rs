@@ -345,6 +345,24 @@ fn sketch_on_a_turned_occurrence() -> (Document, Model, u64, u64, FaceAnchor, Pl
     (doc, model, comp, id, anchor, picked)
 }
 
+/// A sketch on a face of a body whose feature failed names that feature and its error, not
+/// the body as unknown: the anchored body is missing because its feature failed.
+#[test]
+fn a_sketch_on_a_failed_features_body_names_the_feature() {
+    let (mut doc, mut model, _, id, anchor, _) = sketch_on_a_turned_occurrence();
+    let plate = doc.features.iter().find(|f| f.name == "Plate").unwrap().id;
+    let f = doc.feature_mut(plate).unwrap();
+    f.body_names = vec![anchor.target.body.clone()];
+    f.kind = serde_json::from_value(serde_json::json!({
+        "type": "box", "corner": [0, 0, 0], "length": "0", "width": "120", "height": "8"
+    }))
+    .unwrap();
+    model.evaluate(&doc);
+    let failed = model.result(plate).unwrap().error.clone().expect("a box of no length fails");
+    let error = model.result(id).unwrap().error.clone().unwrap();
+    assert_eq!(error, format!("body `{}` is missing: `Plate` failed: {failed}", anchor.target.body));
+}
+
 #[test]
 fn editing_a_sketch_on_a_turned_occurrence_reuses_its_frame_bodies() {
     let (mut doc, model, comp, id, anchor, picked) = sketch_on_a_turned_occurrence();
