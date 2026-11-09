@@ -3113,6 +3113,19 @@ pub struct DesignLink {
     /// before it was kept have none and are taken as up to date.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_sha256: Option<String>,
+    /// The joint origins the linked design defines, as it last read them, in the component's
+    /// own frame: joints of this design name them by placement and name (`Snap::Linked`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub origins: Vec<LinkedOrigin>,
+}
+
+/// A joint origin of a linked design, where that design has it (its frame: origin, z and x).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LinkedOrigin {
+    pub name: String,
+    pub origin: solidcore_record::Vec3,
+    pub z: solidcore_record::Vec3,
+    pub x: solidcore_record::Vec3,
 }
 
 impl DesignLink {

@@ -95,6 +95,9 @@ pub enum Snap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x: Option<XRef>,
     },
+    /// A joint origin the linked design of the component defines (`DesignLink::origins`), by its
+    /// name there: it is where that design has it, as the link last read it.
+    Linked { origin: String },
     /// Another origin moved in its own frame, as Fusion keeps a transform on every joint
     /// origin: along its x, y and z by `x`, `y`, `z`, turned about its z by `angle`, then turned
     /// over (a half turn about its x) when `flip`. Each is an expression (lengths, an angle), so
@@ -257,6 +260,7 @@ impl Snap {
             Snap::Edge { pick, axis, .. } => pick.is_finite() && axis.is_none_or(|a| a.dir().is_finite()),
             Snap::SketchPoint { x, .. } => x_ok(x),
             Snap::Offset { snap, .. } => snap.is_finite(),
+            Snap::Linked { .. } => true,
         }
     }
 }
@@ -899,6 +903,17 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             frame(c, n, face::x_axis(doc, st, comp, x.as_ref(), c)?).ok_or_else(bad)
         }
         Snap::Edge { .. } => edge::edge_frame(doc, st, component_of(doc, o.occurrence)?, &o.snap),
+        Snap::Linked { origin } => {
+            let comp = component_of(doc, o.occurrence)?;
+            let link =
+                doc.links.get(&comp).ok_or_else(|| DocError::Invalid(format!("joint origin `{origin}`: the component is not linked to a design")))?;
+            let l = link
+                .origins
+                .iter()
+                .find(|l| l.name == *origin)
+                .ok_or_else(|| DocError::Invalid(format!("joint origin `{origin}`: the linked design has no such joint origin")))?;
+            frame(l.origin, l.z, Some(l.x)).ok_or_else(bad)
+        }
         Snap::Offset { snap, x, y, z, angle, flip } => {
             let m = resolve_origin(doc, st, &JointOrigin { occurrence: o.occurrence, snap: (**snap).clone() })?;
             let axis = |i: usize| Vec3::new(m[i][0], m[i][1], m[i][2]);
