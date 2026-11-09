@@ -793,8 +793,18 @@ fn add_feature_in(s: &mut Session, p: &Value, kind: FeatureKind, world: bool) ->
     {
         check_plane_name(n, "construct.plane")?;
     }
+    // A profile of another component read through the frame it was made in (row-major, as
+    // occurrence.move's matrix), not the placements now.
+    let profile_frame = match p.get("profile_frame") {
+        None | Some(Value::Null) => None,
+        Some(_) if !matches!(kind, FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. } | FeatureKind::Sweep { .. }) => {
+            return Err(bad(UNKNOWN_COMMAND, "`profile_frame` is for solid.extrude, solid.revolve and solid.sweep"));
+        }
+        Some(m) => Some(super::component::matrix::rigid(m, super::component::matrix::TOLERANCE, UNKNOWN_COMMAND)?),
+    };
     let id = s.doc_mut().add_feature(kind, name)?;
     if let Some(f) = s.doc_mut().feature_mut(id) {
+        f.profile_frame = profile_frame;
         f.participants = participants;
         f.touching = touching;
         f.edge_refs = refs;
