@@ -646,3 +646,23 @@ fn a_face_centre_on_no_flat_face_is_refused_not_moved_elsewhere() {
         assert!(e.contains("not planar") || e.contains("no face"), "{p:?}: {e}");
     }
 }
+
+/// A face-centre origin made on a part's first placement, used on its second (Akku's Rigid 37 on
+/// Cu_Bus:2): it is the second placement's face centre, its face found again in the part's own
+/// frame, and the joint puts that centre on the block's.
+#[test]
+fn a_face_origin_made_on_one_placement_serves_the_second() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"corner": [100, 0, 0], "length": 10, "width": 10, "height": 10, "body_name": "Block"}));
+    run(&mut s, "component.create", json!({"name": "Part", "grounded": false}));
+    run(&mut s, "solid.box", json!({"corner": [0, 0, 0], "length": 10, "width": 10, "height": 10}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "occurrence.copy", json!({"component": "Part", "translate": [40, 0, 0], "axis": [0, 0, 1], "angle": "90 deg"}));
+    run(&mut s, "joint.origin", json!({"name": "Top", "occurrence": "Part:1", "face": [5, 5, 10]}));
+    run(&mut s, "joint.create", json!({"name": "J", "type": "rigid", "a": {"occurrence": "Part:2", "origin": "Top"}, "b": {"face": [105, 5, 10]}, "flip": true}));
+    let second = s.doc.occurrences.iter().filter(|o| s.doc.components.iter().any(|c| c.id == o.component && c.name == "Part")).nth(1).unwrap().id;
+    let o = s.doc.assembly.origins.iter().find(|o| o.name == "Top").map(|o| o.origin.clone()).unwrap();
+    let o = solidcraft_doc::joints::JointOrigin { occurrence: second, ..o };
+    let m = s.doc.origin_world(&s.model.state(), &o).unwrap();
+    assert!(near(Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(105.0, 5.0, 10.0)), "{m:?}");
+}
