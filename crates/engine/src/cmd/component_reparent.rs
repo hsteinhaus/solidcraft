@@ -49,6 +49,16 @@ pub(super) fn reparent(s: &mut Session, p: &Value) -> Result<Value> {
     let old_path: Vec<u64> = from_path.iter().copied().chain([id]).collect();
     let new_path: Vec<u64> = to_path.iter().copied().chain([id]).collect();
 
+    // The placed bodies as named before the move: a body placed through it is named through its
+    // new parent after (`Block (Holder:1/Part:2)`), and sketch links follow it there.
+    let st = s.model.state();
+    let placed: super::super::sketch_project::PlacedBodies = s
+        .doc
+        .body_frames_with_source(&st)
+        .into_iter()
+        .map(|(world, own, component, path, m)| (world, own, component, rebased(&path, &old_path, &new_path).unwrap_or(path), m))
+        .collect();
+
     let mut scratch = s.scratch();
     // Pending moves along both parents and of the placement itself are kept: its new transform
     // was worked out from them.
@@ -104,6 +114,7 @@ pub(super) fn reparent(s: &mut Session, p: &Value) -> Result<Value> {
     if too_deep {
         return Err(bad(cmd, format!("moving {} would nest a face attachment more than 64 placements deep", o.name)));
     }
+    super::super::sketch_project::follow_placed_renames(scratch.doc_mut(), &st, &placed, None);
     // The paths through it follow it before the model is worked out again: that drops a selected
     // or active placement whose path no longer leads anywhere.
     for sel in &mut scratch.selection {
