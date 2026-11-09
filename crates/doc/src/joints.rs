@@ -133,8 +133,10 @@ pub enum Snap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x: Option<XRef>,
     },
-    /// A joint origin the linked design of the component defines (`DesignLink::origins`), by its
-    /// name there: it is where that design has it, as the link last read it.
+    /// A joint origin the component defines, by its name: one its linked design defines
+    /// (`DesignLink::origins`, where that design has it as the link last read it), else one of
+    /// this design's own joint origins on a placement of the component, there on this placement
+    /// (a component's joint origin serves each of its placements, as in Fusion).
     Linked { origin: String },
     /// Another origin moved in its own frame, as Fusion keeps a transform on every joint
     /// origin: along its x, y and z by `x`, `y`, `z`, turned about its z by `angle`, then turned
@@ -1064,14 +1066,18 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
         }
         Snap::Linked { origin } => {
             let comp = component_of(doc, o.occurrence)?;
-            let link =
-                doc.links.get(&comp).ok_or_else(|| DocError::Invalid(format!("joint origin `{origin}`: the component is not linked to a design")))?;
-            let l = link
-                .origins
-                .iter()
-                .find(|l| l.name == *origin)
-                .ok_or_else(|| DocError::Invalid(format!("joint origin `{origin}`: the linked design has no such joint origin")))?;
-            frame(l.origin, l.z, Some(l.x)).ok_or_else(bad)
+            if let Some(l) = doc.links.get(&comp).and_then(|link| link.origins.iter().find(|l| l.name == *origin)) {
+                return frame(l.origin, l.z, Some(l.x)).ok_or_else(bad);
+            }
+            // The design's own joint origin of that name on a placement of this component, unless
+            // it names one by name itself (which would go round).
+            let own = doc.assembly.origins.iter().find(|n| {
+                n.name == *origin && !matches!(n.origin.snap, Snap::Linked { .. }) && component_of(doc, n.origin.occurrence).is_ok_and(|c| c == comp)
+            });
+            match own {
+                Some(n) => resolve_origin(doc, st, &JointOrigin { occurrence: o.occurrence, snap: n.origin.snap.clone() }),
+                None => Err(DocError::Invalid(format!("joint origin `{origin}`: the component defines no joint origin of that name"))),
+            }
         }
         Snap::Offset { snap, x, y, z, angle, flip } => {
             let m = resolve_origin(doc, st, &JointOrigin { occurrence: o.occurrence, snap: (**snap).clone() })?;
