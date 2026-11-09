@@ -1763,3 +1763,39 @@ fn a_second_placements_face_and_edge_project_where_it_is_placed() {
     check(&s, 15.0);
     check(&Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap()), 15.0);
 }
+
+/// A second placement moved into another component is named through it ("Block
+/// (Holder:1/Part:2)"): a sketch projecting it follows the new name. Kept by the old one, the
+/// link found the edge on the one body left with it, the first placement, once the sketch was
+/// worked out again (a copy pasted later, or the design opened), and its constraints failed.
+#[test]
+fn a_projected_placement_moved_into_another_component_stays_projected() {
+    let mut s = Session::default();
+    let part = run(&mut s, "component.create", json!({"name":"Part"}));
+    run(&mut s, "solid.box", json!({"length":20,"width":20,"height":10,"body_name":"Block"}));
+    run(&mut s, "component.activate", json!({"component":0}));
+    let copy = run(&mut s, "occurrence.copy", json!({"component":part["component"],"translate":[50,0,5]}))["occurrence"].clone();
+    let sketch = run(&mut s, "sketch.create", json!({"plane":"XY","offset":15}))["sketch"].as_u64().unwrap();
+    run(&mut s, "sketch.project", json!({"refs":[{"body":"Block (Part:2)","edge":[60,20,15]}]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "component.create", json!({"name":"Holder","parent":"root","activate":false}));
+    run(&mut s, "component.activate", json!({"component":0}));
+    run(&mut s, "occurrence.reparent", json!({"occurrence":copy,"parent":"Holder"}));
+    // Worked out from its features alone, as after opening it: the edge is still the copy's.
+    let rebuilt = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    let state = rebuilt.model.state();
+    let ss = state.sketch(sketch).unwrap();
+    let world: Vec<String> = rebuilt.world_state().unwrap().bodies.iter().map(|b| b.name.clone()).collect();
+    for l in &ss.sketch.links {
+        assert!(l.source.bodies().iter().all(|b| world.contains(&b.to_string())), "{:?} not in {world:?}", l.source);
+    }
+    let points: Vec<_> = ss
+        .sketch
+        .links
+        .iter()
+        .flat_map(|l| ss.sketch.link_points(&l.id))
+        .filter_map(|p| ss.sketch.points.get(p))
+        .map(|p| ss.plane.to_world(p.pos))
+        .collect();
+    assert!(!points.is_empty() && points.iter().all(|p| p.x > 49.9 && p.x < 70.1), "{points:?}");
+}
