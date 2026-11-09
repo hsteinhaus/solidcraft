@@ -117,6 +117,44 @@ fn capturing_one_transferred_profile_instance_keeps_its_peer_in_place() {
     assert!((xs[0] - 60.0).abs() < 1e-6 && (xs[1] - 120.0).abs() < 1e-6, "{xs:?}");
 }
 
+/// A sketch's links to another component read through the frame pinned for that component
+/// (`link_frames`, set in place on sketch.edit), as Fusion evaluated them when the sketch was
+/// made, not through the placements now: the projected point stays where it was in the sketch
+/// when the sketch's own component moves, follows an edit of its source, and is kept on reopen.
+#[test]
+fn a_sketchs_pinned_link_frame_keeps_its_projections_where_they_were_made() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name":"X","expression":"5 mm"}));
+    run(&mut s, "component.create", json!({"name":"Src","grounded":false}));
+    run(&mut s, "sketch.create", json!({"plane":"XY","name":"S"}));
+    run(&mut s, "sketch.circle.center", json!({"center":[5,0],"radius":2,"id":"c"}));
+    run(&mut s, "sketch.dimension", json!({"entities":["origin","c.center"],"type":"horizontal","value":"X"}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "component.activate", json!({"component":0}));
+    let dst = run(&mut s, "component.create", json!({"name":"Dst","grounded":false}))["occurrence"].as_u64().unwrap();
+    run(&mut s, "sketch.create", json!({"plane":"XY","name":"T"}));
+    let point = run(&mut s, "sketch.project", json!({"refs":[{"sketch":"S","point":"c.center"}]}))["links"][0]["points"][0].as_str().unwrap().to_string();
+    run(&mut s, "sketch.finish", json!({}));
+    // pinned in place, as made: both placements at identity
+    run(&mut s, "sketch.edit", json!({"sketch":"T","link_frames":{"Src":[[1,0,0,0],[0,1,0,0],[0,0,1,0]]}}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "component.activate", json!({"component":0}));
+    run(&mut s, "occurrence.move", json!({"occurrence":dst,"translate":[7,3,0],"axis":[0,0,1],"angle":"30 deg"}));
+    let local = |s: &Session| {
+        let st = s.model.state();
+        let t = st.sketch(s.doc.find_feature("T").unwrap().id).unwrap();
+        t.sketch.point(t.sketch.resolve_point(&point).unwrap()).unwrap()
+    };
+    let q = local(&s);
+    assert!((q.x - 5.0).abs() < 1e-9 && q.y.abs() < 1e-9, "{q:?}");
+    run(&mut s, "parameters.change", json!({"name":"X","expression":"8 mm"}));
+    let q = local(&s);
+    assert!((q.x - 8.0).abs() < 1e-9 && q.y.abs() < 1e-9, "follows its source: {q:?}");
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    let q = local(&reopened);
+    assert!((q.x - 8.0).abs() < 1e-9 && q.y.abs() < 1e-9, "reopened: {q:?}");
+}
+
 #[test]
 fn a_profile_without_a_body_transfer_keeps_its_live_component_frame() {
     let mut s = Session::default();
