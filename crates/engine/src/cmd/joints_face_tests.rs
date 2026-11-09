@@ -605,3 +605,20 @@ fn jointed_arms_stay_together_as_the_arm_changes() {
     }
     assert!(apart.is_empty(), "{} joints apart:\n{}", apart.len(), apart.join("\n"));
 }
+
+/// A face-centre origin picked on a face that isn't flat, or on no face, is refused, rather than
+/// taken at the centre of some flat face elsewhere: that put a motor's mount origin on a small
+/// tilted face beside the flat one picked.
+#[test]
+fn a_face_centre_on_no_flat_face_is_refused_not_moved_elsewhere() {
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius": 5, "height": 10}));
+    let snap = |p: Vec3| solidcraft_doc::joints::JointOrigin { occurrence: 0, snap: Snap::FaceCenter { pick: p, face: None, x: None } };
+    let st = s.model.state();
+    let top = solidcraft_doc::joints::resolve_origin(&s.doc, &st, &snap(Vec3::new(1.0, 1.0, 10.0))).unwrap();
+    assert!(near(Vec3::new(top[3][0], top[3][1], top[3][2]), Vec3::new(0.0, 0.0, 10.0)), "{top:?}");
+    for p in [Vec3::new(5.0, 0.0, 5.0), Vec3::new(30.0, 0.0, 10.0)] {
+        let e = solidcraft_doc::joints::resolve_origin(&s.doc, &st, &snap(p)).unwrap_err().to_string();
+        assert!(e.contains("not planar") || e.contains("no face"), "{p:?}: {e}");
+    }
+}
