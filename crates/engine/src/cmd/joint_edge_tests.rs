@@ -65,13 +65,15 @@ fn a_part_at_an_edges_middle_follows_it_and_the_face_can_be_chosen() {
         run(&mut s, "parameters.change", json!({"name": "W", "expression": format!("{w} mm")}));
         assert!(near(bracket(&s), Vec3::new(w - 40.0, 150.0, 2.0)), "W {w}: {:?}", bracket(&s));
     }
-    // The same edge on the end face: z points out of the end (+X), y into it (down).
+    // The same edge on the end face: z points out of the end (+X), y into it (down). The
+    // bracket's bottom is picked where the joint above left it.
     run(&mut s, "joint.delete", json!({"joint": "Mid"}));
+    let bottom = place(&s, "Bracket", Vec3::new(10.0, 505.0, 0.0));
     run(
         &mut s,
         "joint.create",
         json!({"type": "rigid", "a": {"occurrence": "Panel", "edge": [320, 100, 2], "on": [320, 150, 1]},
-               "b": {"occurrence": "Bracket", "face": [10, 505, 0]}, "name": "End"}),
+               "b": {"occurrence": "Bracket", "face": [bottom.x, bottom.y, bottom.z]}, "name": "End"}),
     );
     assert!(near(bracket(&s), Vec3::new(320.0, 150.0, 2.0)), "{:?}", bracket(&s));
     // The bracket's bottom faces the end face: its top (6 mm up its own z) is out along +X.

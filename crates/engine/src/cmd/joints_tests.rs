@@ -2749,15 +2749,17 @@ fn new_joints_generate_type_prefixed_names_or_keep_custom_name() {
     );
     assert_eq!(r2["name"], "Slider Joint1");
 
-    // 3. With custom name: preserves custom name exactly
+    // 3. With custom name: preserves custom name exactly. The faces are picked where the joints
+    // above put the cubes.
+    let (pa, pb) = (place(&s, "A", Vec3::new(5.0, 5.0, 10.0)), place(&s, "B", Vec3::new(25.0, 5.0, 0.0)));
     let r3 = run(
         &mut s,
         "joint.create",
         json!({
             "type": "rigid",
             "name": "CustomRigid",
-            "a": {"occurrence": a, "face": [5, 5, 10]},
-            "b": {"occurrence": b, "face": [25, 5, 0]}
+            "a": {"occurrence": a, "face": [pa.x, pa.y, pa.z]},
+            "b": {"occurrence": b, "face": [pb.x, pb.y, pb.z]}
         }),
     );
     assert_eq!(r3["name"], "CustomRigid");

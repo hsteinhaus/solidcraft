@@ -61,6 +61,67 @@ pub(crate) fn surface_of(b: &Brep, face: usize) -> Option<FaceSurface> {
     })
 }
 
+/// The centre Fusion gives planar face `face` of `b` as its centre key point: the middle of the
+/// axis-aligned box of its edges' NURBS control points, every loop's (measured in Fusion on faces
+/// with and without holes, to 2e-12 mm), laid onto the face's plane. Edges as Fusion holds them
+/// as NURBS: a line by its ends; a circle or an arc of one as rational quadratics, one per quarter
+/// turn or less, split evenly (a whole circle four from its start point), each with its middle
+/// point where the end tangents meet; a spline by its own control points. `None` for a face not
+/// on a plane, a mesh body, or an edge none of these covers.
+pub fn face_control_box_centre(b: &Body, face: usize) -> Option<Vec3> {
+    use solidcore_record::brep::Loop;
+    if b.is_mesh() {
+        return None;
+    }
+    let Some(FaceSurface::Plane { normal, point }) = face_surface(b, face) else { return None };
+    let record = b.record();
+    let f = record.faces.get(face)?;
+    let (mut lo, mut hi) =
+        (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
+    let mut take = |p: Vec3| {
+        lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+        hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+    };
+    for l in &f.loops {
+        let Loop::Edges { edges } = l else { continue };
+        for oe in edges {
+            let i = oe.edge as usize;
+            let e = record.edges.get(i)?;
+            if let Some(c) = edge_circle(b, i) {
+                let x = (c.start - c.center).normalized()?;
+                let y = c.axis.cross(x);
+                let n = (c.angle / std::f64::consts::FRAC_PI_2 - 1e-9).ceil().max(1.0);
+                let step = c.angle / n;
+                let at = |t: f64, r: f64| c.center + (x * t.cos() + y * t.sin()) * r;
+                for k in 0..n as usize {
+                    let t0 = step * k as f64;
+                    take(at(t0, c.radius));
+                    take(at(t0 + 0.5 * step, c.radius / (0.5 * step).cos()));
+                    take(at(t0 + step, c.radius));
+                }
+                continue;
+            }
+            match e.parameters() {
+                Curve::Line { .. } => {
+                    let c = CurveEval::new(e.parameters()).ok()?;
+                    take(c.point(e.interval[0])?);
+                    take(c.point(e.interval[1])?);
+                }
+                Curve::Polyline { points } | Curve::Spline { points, .. } => points.iter().for_each(|p| take(Vec3::from(*p))),
+                Curve::RationalSpline { homogeneous, .. } => {
+                    homogeneous.iter().filter(|h| h[3] != 0.0).for_each(|h| take(Vec3::new(h[0] / h[3], h[1] / h[3], h[2] / h[3])))
+                }
+                _ => return None,
+            }
+        }
+    }
+    if !(lo.x <= hi.x) {
+        return None;
+    }
+    let mid = (lo + hi) * 0.5;
+    Some(mid - *normal * (mid - point).dot(*normal))
+}
+
 /// The circle (or arc of one) an edge's curve lies on, from its exact curve.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EdgeCircle {

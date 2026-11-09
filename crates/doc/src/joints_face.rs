@@ -77,16 +77,24 @@ impl NamedFace<'_> {
         self.own_cylinder().map(|c| placed(&self.offset, c))
     }
 
-    /// The face's centre (the middle of its outline, `outline_centre`) and outward normal (the
-    /// component's coordinates), when it is planar.
+    /// The face's centre ([`planar_centre`]) and outward normal (the component's coordinates),
+    /// when it is planar.
     pub fn plane(&self) -> Result<Option<(Vec3, Vec3)>> {
         let faces = self.body.joint_faces()?;
         Ok(faces.get(self.face).and_then(|f| {
             let n = f.plane_normal?;
-            let c = outline_centre(&self.body.mesh(), self.face, f.centroid, n).unwrap_or(f.centroid);
+            let c = planar_centre(self.body, self.face, f.centroid, n);
             Some((apply_point(&self.offset, c), apply_vector(&self.offset, n)))
         }))
     }
+}
+
+/// The centre of planar face `face` of `b` (the body's own coordinates), as Fusion's centre key
+/// point has it: the middle of the box of its edges' NURBS control points
+/// ([`solidcraft_kernel::face_control_box_centre`]). Only for an edge whose exact curve that
+/// doesn't cover (a traced intersection), the middle of the face's outline from its mesh.
+pub(super) fn planar_centre(b: &ModelBody, face: usize, centroid: Vec3, n: Vec3) -> Vec3 {
+    solidcraft_kernel::face_control_box_centre(&b.body, face).unwrap_or_else(|| outline_centre(&b.mesh(), face, centroid, n).unwrap_or(centroid))
 }
 
 /// The middle of the area the outer boundary of planar face `face` encloses (the body's own

@@ -984,33 +984,30 @@ fn named_pick(doc: &Document, st: &ModelState, component: u64, pick: Vec3, face:
     }
 }
 
-/// The centre (the middle of its outline, `face::outline_centre`) and outward normal of the
-/// planar face nearest `pick` (component coordinates; a body moved in from another component
-/// placed by its offset, as a named face is).
-fn nearest_plane(doc: &Document, st: &ModelState, o: &JointOrigin, pick: Vec3) -> Result<(Vec3, Vec3)> {
+/// The planar face of the origin's component the point lies on: its centre ([`face::planar_centre`])
+/// and outward normal (component coordinates). A point on no face, or on a face that is not
+/// planar, is an error: taking the nearest planar face elsewhere put a motor's mount origin on a
+/// small tilted face beside the flat one picked.
+fn plane_at(doc: &Document, st: &ModelState, o: &JointOrigin, pick: Vec3) -> Result<(Vec3, Vec3)> {
     let comp = component_of(doc, o.occurrence)?;
-    let mut best: Option<(f64, &crate::ModelBody, solidcraft_kernel::FaceInfo, Vec3)> = None;
-    for b in component_bodies(doc, st, comp) {
-        let offset = doc.model_body_offset(b);
-        for f in b.joint_faces()?.iter() {
-            let Some(own) = f.plane_normal else { continue };
-            let (c, n) = match offset {
-                Some(m) => (apply_point(m, f.centroid), apply_vector(m, own)),
-                None => (f.centroid, own),
-            };
-            let d = (pick - c).dot(n).abs() + 1e-3 * (pick - c).len();
-            if best.as_ref().is_none_or(|(bd, ..)| d < *bd) {
-                best = Some((d, b, f.clone(), own));
-            }
+    let mut best: Option<(f64, &crate::ModelBody, usize)> = None;
+    for b in component_bodies(doc, st, comp).into_iter().filter(|b| !b.body.is_mesh()) {
+        let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
+        let Some(inverse) = mat_inverse(&offset) else { continue };
+        let p = apply_point(&inverse, pick);
+        let tol = (b.body.size() * 1e-3).max(1e-3);
+        if let Some((d, f)) = crate::appearance::nearest_face(b, p).filter(|(d, _)| *d <= tol)
+            && best.is_none_or(|(bd, ..)| d < bd)
+        {
+            best = Some((d, b, f));
         }
     }
-    let (_, b, f, n) = best.ok_or_else(|| DocError::Invalid("joint origin: no planar face there".into()))?;
-    // The face's middle: its outline's on a face with holes.
-    let c = face::outline_centre(&b.mesh(), f.index, f.centroid, n).unwrap_or(f.centroid);
-    Ok(match doc.model_body_offset(b) {
-        Some(m) => (apply_point(m, c), apply_vector(m, n)),
-        None => (c, n),
-    })
+    let (_, b, f) = best.ok_or_else(|| DocError::Invalid(format!("joint origin: no face at {pick:?}")))?;
+    let info = b.joint_faces()?.get(f).cloned().ok_or_else(|| DocError::Invalid("joint origin: face".into()))?;
+    let n = info.plane_normal.ok_or_else(|| DocError::Invalid(format!("joint origin: the face at {pick:?} is not planar")))?;
+    let c = face::planar_centre(b, f, info.centroid, n);
+    let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
+    Ok((apply_point(&offset, c), apply_vector(&offset, n)))
 }
 
 /// Resolve a joint origin to a frame in its component's coordinates.
@@ -1020,8 +1017,8 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
         Snap::Frame { origin, z, x } => frame(*origin, *z, *x).ok_or_else(bad),
         Snap::Point { point, z, x } => frame(*point, z.unwrap_or(Vec3::Z), *x).ok_or_else(bad),
         Snap::FaceCenter { pick, face, x } => {
-            // A named planar face gives its own centre and normal; another face (or none) the
-            // planar face nearest the point.
+            // A named planar face gives its own centre and normal; without a name, the planar
+            // face the point lies on (a named face that isn't planar is an error there too).
             let comp = component_of(doc, o.occurrence)?;
             let named = match face.as_deref() {
                 Some(n) => Some(face::named_face(doc, st, comp, *pick, n)?),
@@ -1029,7 +1026,7 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             };
             let (c, n) = match named.as_ref().map(face::NamedFace::plane).transpose()?.flatten() {
                 Some(cn) => cn,
-                None => nearest_plane(doc, st, o, named.as_ref().map_or(*pick, |f| f.point))?,
+                None => plane_at(doc, st, o, named.as_ref().map_or(*pick, |f| f.point))?,
             };
             frame(c, n, face::x_axis(doc, st, comp, x.as_ref(), c)?).ok_or_else(bad)
         }

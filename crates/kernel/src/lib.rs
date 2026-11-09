@@ -230,7 +230,7 @@ pub use step_in::{
 };
 pub use step_out::{ExportBody, ExportProduct, StepHeader, step_export_bodies, step_export_products};
 pub use surface_extend::{ExtendLimit, ExtendMode, ExtendOptions, extend_surface};
-pub use surface_kind::{EdgeCircle, FaceSurface, edge_circle, face_surface};
+pub use surface_kind::{EdgeCircle, FaceSurface, edge_circle, face_control_box_centre, face_surface};
 pub use surface_offset::offset_surface;
 pub use surface_ruled::{Ruled, RuledCorners, RuledMode, ruled_far_handles, ruled_surface, ruled_surface_with};
 pub use surface_trim::{TrimKeep, mutual_trim, trim, trim_keep};
