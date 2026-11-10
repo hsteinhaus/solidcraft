@@ -178,3 +178,66 @@ fn a_corner_of_a_linked_designs_second_placement_stays_on_it() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(near(corner(&s), Vec3::new(100.0, 40.0, 30.0)), "the link read again: {:?}", corner(&s));
 }
+
+/// As above, a hole's centre (off every surface) picked on each placement: each origin keeps the
+/// body of its own placement, not merely the hole nearest its pick.
+#[test]
+fn a_hole_centre_of_a_linked_designs_second_placement_keeps_its_body() {
+    let dir = std::env::temp_dir().join(format!("solidcraft-linked-hole-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("pack.solidcraft");
+    let mut pack = Session::default();
+    let spacer = run(&mut pack, "component.create", json!({"name": "Spacer"}));
+    run(&mut pack, "solid.box", json!({"length": 10, "width": 20, "height": 30, "body_name": "Plate"}));
+    run(&mut pack, "solid.hole", json!({"position": [5, 10, 30], "diameter": 4}));
+    run(&mut pack, "component.activate", json!({"component": "root"}));
+    run(&mut pack, "occurrence.copy", json!({"component": spacer["component"], "translate": [0, 40, 0]}));
+    run(&mut pack, "file.save", json!({"path": path}));
+    let mut s = Session::default();
+    let linked = run(&mut s, "component.insert_design", json!({"path": path, "translate": [100, 0, 0]}));
+    let _ = std::fs::remove_dir_all(&dir);
+    let occurrence = linked["occurrence"].clone();
+    run(&mut s, "joint.origin", json!({"name": "First", "occurrence": occurrence, "circle": [105, 10, 30]}));
+    run(&mut s, "joint.origin", json!({"name": "Second", "occurrence": occurrence, "circle": [105, 50, 30]}));
+    let origin = |name: &str| s.doc.assembly.origins.iter().find(|o| o.name == name).unwrap().origin.clone();
+    let centre = |o: &solidcraft_doc::joints::JointOrigin| {
+        let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), o).unwrap_or_else(|e| panic!("{e}"));
+        solidcraft_doc::apply_point(&solidcraft_doc::joints::occurrence_world(&s.doc, o.occurrence), Vec3::new(m[3][0], m[3][1], m[3][2]))
+    };
+    let (first, second) = (origin("First"), origin("Second"));
+    assert!(near(centre(&second), Vec3::new(105.0, 50.0, 30.0)), "{:?}", centre(&second));
+    assert!(first.body.is_some() && second.body.is_some() && first.body != second.body, "{:?} {:?}", first.body, second.body);
+}
+
+/// Two placements side by side share a face plane, edge and corner: `body` says which placement's
+/// face the corner is on (its normal is the frame's z).
+#[test]
+fn a_corner_where_two_placements_meet_is_on_the_body_given() {
+    let dir = std::env::temp_dir().join(format!("solidcraft-linked-touching-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("pack.solidcraft");
+    let mut pack = Session::default();
+    let spacer = run(&mut pack, "component.create", json!({"name": "Spacer"}));
+    run(&mut pack, "solid.box", json!({"length": 10, "width": 20, "height": 30, "body_name": "Plate"}));
+    run(&mut pack, "component.activate", json!({"component": "root"}));
+    run(&mut pack, "occurrence.copy", json!({"component": spacer["component"], "translate": [0, 20, 0]}));
+    run(&mut pack, "file.save", json!({"path": path}));
+    let mut s = Session::default();
+    let linked = run(&mut s, "component.insert_design", json!({"path": path, "translate": [100, 0, 0]}));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (occurrence, component) = (linked["occurrence"].clone(), linked["component"].as_u64().unwrap());
+    // Without `body` the corner is on either placement: refused, naming both.
+    let unsaid = json!({"name": "B", "occurrence": occurrence, "edge": [100, 20, 15], "on": [105, 20, 15], "corner": [100, 20, 30]});
+    let refused = s.execute("joint.origin", &unsaid).map(|_| ()).unwrap_err().to_string();
+    assert!(refused.contains("Plate (Spacer:2)") && refused.contains("`Plate`"), "{refused}");
+    // The second placement, by a point on its top face only.
+    let body = solidcraft_doc::joints::body_at(&s.doc, &s.model.state(), component, Vec3::new(5.0, 30.0, 30.0)).unwrap();
+    let origin = json!({"name": "A", "occurrence": occurrence, "body": body, "edge": [100, 20, 15], "on": [105, 20, 15], "corner": [100, 20, 30]});
+    run(&mut s, "joint.origin", origin);
+    let o = s.doc.assembly.origins.iter().find(|o| o.name == "A").unwrap().origin.clone();
+    let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), &o).unwrap_or_else(|e| panic!("{e}"));
+    let world = solidcraft_doc::joints::occurrence_world(&s.doc, o.occurrence);
+    let at = solidcraft_doc::apply_point(&world, Vec3::new(m[3][0], m[3][1], m[3][2]));
+    let z = solidcraft_doc::apply_vector(&world, Vec3::new(m[2][0], m[2][1], m[2][2]));
+    assert!(near(at, Vec3::new(100.0, 20.0, 30.0)) && near(z, Vec3::new(0.0, -1.0, 0.0)), "{at:?} {z:?} on {:?}", o.body);
+}
