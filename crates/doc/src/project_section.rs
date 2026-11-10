@@ -2,7 +2,8 @@
 //! cylinder along or across the plane's normal, a sphere, and a cone or torus about the normal
 //! cut it in lines and circles, trimmed where the face's edges cross the plane (on its vertices
 //! where the cut passes through them); edges lying in the plane are those edges themselves.
-//! Any other face is cut on its mesh, as before.
+//! A spline face extruded straight along a direction in the plane is cut in its rulings through
+//! the crossings of its edges. Any other face is cut on its mesh, as before.
 
 use solidcore_record::brep::{Brep, Loop, Surface};
 use solidcore_record::{Plane, Vec2, Vec3};
@@ -25,6 +26,9 @@ enum Cut {
     Lines(Vec<(Vec2, Vec2)>),
     /// Circles: centre and radius.
     Circles(Vec<(Vec2, f64)>),
+    /// Lines of this unit direction through the crossings of the face's boundary: the rulings of
+    /// a wall extruded along the plane.
+    Rulings(Vec2),
     /// The face lies in the plane, or doesn't reach it.
     Nothing,
     /// Not an exact cut here.
@@ -116,6 +120,24 @@ pub(crate) fn section(
             own_flat.iter().any(|e| record.edges.get(*e).is_some_and(|x| distance_to_edge(x, p).is_some_and(|d| d <= x.tolerance.max(tiny))))
         };
         let inside = |p: Vec3| shape.on_face(f, p) && !on_flat(p);
+        let cut = match cut {
+            Cut::Rulings(d) => {
+                let mut lines: Vec<(Vec2, Vec2)> = Vec::new();
+                for c in &points {
+                    let q = plane.to_local(c.at);
+                    if !lines.iter().any(|(p, _)| (*p + d * (q - *p).dot(d)).dist(q) <= c.tol + tiny) {
+                        lines.push((q, d));
+                    }
+                }
+                // A wall the plane only touches has no crossing to tell where.
+                if lines.is_empty() {
+                    out.extend(mesh_cut(f));
+                    continue;
+                }
+                Cut::Lines(lines)
+            }
+            cut => cut,
+        };
         match cut {
             Cut::Lines(lines) => {
                 for (p, d) in lines {
@@ -175,7 +197,7 @@ pub(crate) fn section(
                     }
                 }
             }
-            Cut::Nothing | Cut::Unsupported => {}
+            Cut::Nothing | Cut::Unsupported | Cut::Rulings(_) => {}
         }
     }
     Some(out)
@@ -355,8 +377,41 @@ fn surface_cut(s: &Surface, plane: &Plane, n: Vec3, tiny: f64) -> Cut {
             }
             Cut::Circles(circles)
         }
+        Surface::Spline { u_knots, v_knots, points } => {
+            let net: Vec<Vec<[f64; 4]>> = points.iter().map(|r| r.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect()).collect();
+            rulings(u_knots, v_knots, &net, n, local_dir, tiny)
+        }
+        Surface::RationalSpline { u_knots, v_knots, homogeneous } => rulings(u_knots, v_knots, homogeneous, n, local_dir, tiny),
         _ => Cut::Unsupported,
     }
+}
+
+/// The cut of a spline surface that is a curve extruded straight (degree 1 with two rows of
+/// control points one fixed step apart, of equal weights) along a direction in the plane.
+fn rulings(u_knots: &[f64], v_knots: &[f64], net: &[Vec<[f64; 4]>], n: Vec3, local_dir: impl Fn(Vec3) -> Option<Vec2>, tiny: f64) -> Cut {
+    let point = |h: &[f64; 4]| Vec3::new(h[0] / h[3], h[1] / h[3], h[2] / h[3]);
+    // The step between the two rows of each pair, when it is one step.
+    let step = |pairs: &mut dyn Iterator<Item = (&[f64; 4], &[f64; 4])>| -> Option<Vec3> {
+        let mut d: Option<Vec3> = None;
+        for (a, b) in pairs {
+            if (a[3] - b[3]).abs() > 1e-12 * a[3].abs() {
+                return None;
+            }
+            let x = point(b) - point(a);
+            if d.is_some_and(|d| d.dist(x) > tiny) {
+                return None;
+            }
+            d = d.or(Some(x));
+        }
+        d.filter(|d| d.len() > tiny)
+    };
+    let along_v = (v_knots.len() == 4 && net.iter().all(|r| r.len() == 2)).then(|| step(&mut net.iter().map(|r| (&r[0], &r[1])))).flatten();
+    let along_u = || (u_knots.len() == 4 && net.len() == 2).then(|| step(&mut net[0].iter().zip(&net[1]))).flatten();
+    let Some(z) = along_v.or_else(along_u).and_then(|d| d.normalized()) else { return Cut::Unsupported };
+    if z.dot(n).abs() > PARALLEL {
+        return Cut::Unsupported;
+    }
+    local_dir(z).map_or(Cut::Unsupported, Cut::Rulings)
 }
 
 fn sphere(plane: &Plane, o: Vec3, radius: f64, tiny: f64) -> Cut {
