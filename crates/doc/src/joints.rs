@@ -977,21 +977,26 @@ fn origin_bodies<'a>(doc: &Document, st: &'a ModelState, component: u64, body: O
     st.bodies.iter().filter(|b| doc.model_body_component(b) == component && body.is_none_or(|n| b.name == n)).collect()
 }
 
-/// The body of `component` whose surface lies nearest `pick` (component coordinates), within
-/// reach of it (the first of bodies as near): the body a joint origin picked there keeps.
-pub fn body_at(doc: &Document, st: &ModelState, component: u64, pick: Vec3) -> Option<String> {
-    let mut best: Option<(f64, &crate::ModelBody)> = None;
+/// The bodies of `component` whose surface lies within reach of `pick` (component coordinates),
+/// nearest first: the bodies a joint origin picked there can be on.
+pub fn bodies_at(doc: &Document, st: &ModelState, component: u64, pick: Vec3) -> Vec<String> {
+    let mut near: Vec<(f64, &crate::ModelBody)> = Vec::new();
     for b in component_bodies(doc, st, component).into_iter().filter(|b| !b.body.is_mesh()) {
         let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
         let Some(inverse) = mat_inverse(&offset) else { continue };
         let tol = (b.body.size() * 1e-3).max(1e-3);
-        if let Some((d, _)) = crate::appearance::nearest_face(b, apply_point(&inverse, pick)).filter(|(d, _)| *d <= tol)
-            && best.is_none_or(|(bd, _)| d < bd)
-        {
-            best = Some((d, b));
+        if let Some((d, _)) = crate::appearance::nearest_face(b, apply_point(&inverse, pick)).filter(|(d, _)| *d <= tol) {
+            near.push((d, b));
         }
     }
-    best.map(|(_, b)| b.name.clone())
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    near.into_iter().map(|(_, b)| b.name.clone()).collect()
+}
+
+/// The body of `component` whose surface lies nearest `pick` (component coordinates), within
+/// reach of it.
+pub fn body_at(doc: &Document, st: &ModelState, component: u64, pick: Vec3) -> Option<String> {
+    bodies_at(doc, st, component, pick).into_iter().next()
 }
 
 /// The component an occurrence places (0 for the root).
@@ -2710,7 +2715,7 @@ mod reach;
 
 #[path = "joints_face.rs"]
 mod face;
-pub use face::{end_faces, face_name_at, named_face_spot, pin_end, round_end_at};
+pub use face::{end_faces, face_name_at, face_name_on, named_face_spot, pin_end, round_end_at};
 #[path = "joints_relations.rs"]
 mod relations;
 pub use reach::{REACH_TOL, Reach, Reached, reach};
