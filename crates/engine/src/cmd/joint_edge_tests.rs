@@ -145,3 +145,35 @@ fn an_edge_origin_on_a_body_placed_by_an_offset_lands_on_that_edge() {
     let (o, z) = resolve(corner);
     assert!(near(o, at(Vec3::new(0.0, 0.0, 5.0))) && near(z, up), "{o:?} {z:?}");
 }
+
+/// A design whose Spacer is placed twice, linked into another: the second placement's corner is
+/// picked, and the origin stays on that placement (both carry the same face and edge names), as
+/// made and once the link is read again.
+#[test]
+fn a_corner_of_a_linked_designs_second_placement_stays_on_it() {
+    let dir = std::env::temp_dir().join(format!("solidcraft-linked-instance-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("pack.solidcraft");
+    let mut pack = Session::default();
+    let spacer = run(&mut pack, "component.create", json!({"name": "Spacer"}));
+    run(&mut pack, "solid.box", json!({"length": 10, "width": 20, "height": 30, "body_name": "Plate"}));
+    run(&mut pack, "component.activate", json!({"component": "root"}));
+    run(&mut pack, "occurrence.copy", json!({"component": spacer["component"], "translate": [0, 40, 0]}));
+    run(&mut pack, "file.save", json!({"path": path}));
+    let mut s = Session::default();
+    let linked = run(&mut s, "component.insert_design", json!({"path": path, "translate": [100, 0, 0]}));
+    let occurrence = linked["occurrence"].clone();
+    // The second Spacer's front top edge (y = 40), on its front face, at its corner x = 100.
+    let origin = json!({"name": "A", "occurrence": occurrence, "edge": [105, 40, 30], "on": [105, 40, 25], "corner": [100, 40, 30]});
+    run(&mut s, "joint.origin", origin);
+    let corner = |s: &Session| {
+        let o = &s.doc.assembly.origins.iter().find(|o| o.name == "A").unwrap().origin;
+        let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), o).unwrap_or_else(|e| panic!("{e}"));
+        let world = solidcraft_doc::joints::occurrence_world(&s.doc, o.occurrence);
+        solidcraft_doc::apply_point(&world, Vec3::new(m[3][0], m[3][1], m[3][2]))
+    };
+    assert!(near(corner(&s), Vec3::new(100.0, 40.0, 30.0)), "as made: {:?}", corner(&s));
+    run(&mut s, "component.update_links", json!({}));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(near(corner(&s), Vec3::new(100.0, 40.0, 30.0)), "the link read again: {:?}", corner(&s));
+}
