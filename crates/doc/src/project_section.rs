@@ -366,3 +366,42 @@ fn sphere(plane: &Plane, o: Vec3, radius: f64, tiny: f64) -> Cut {
     }
     Cut::Circles(vec![(plane.to_local(o), (radius * radius - h * h).sqrt())])
 }
+
+/// Edge `e` of `body` seen along `plane`'s normal when it lies on a cylinder about that normal
+/// and is no line or circle itself: the cylinder's arc between the projected ends of the edge,
+/// on the side its middle lies (an edge with both ends at one point, the whole circle).
+pub(super) fn cylinder_arc(body: &ModelBody, plane: &Plane, e: usize) -> Option<LinkGeom> {
+    use solidcore_record::brep::Curve;
+    if body.body.is_mesh() {
+        return None;
+    }
+    let record = body.body.record();
+    let edge = record.edges.get(e)?;
+    if matches!(edge.curve, Curve::Line { .. } | Curve::Circle { .. }) {
+        return None;
+    }
+    let n = plane.normal().normalized()?;
+    let tiny = body.body.size().max(1e-9) * 1e-9;
+    let (c, r) = edge.uses.iter().find_map(|u| match &record.faces.get(u.face as usize)?.surface {
+        Surface::Cylinder { frame, radius } => {
+            let z = Vec3::from(frame.x_axis).cross(Vec3::from(frame.y_axis)).normalized()?;
+            (z.cross(n).len() <= PARALLEL).then(|| (plane.to_local(Vec3::from(frame.origin)), *radius))
+        }
+        _ => None,
+    })?;
+    let end = |k: usize| -> Option<(Vec2, f64)> {
+        let v = record.vertices.get(*edge.vertices.get(k)? as usize)?;
+        Some((plane.to_local(Vec3::from(v.point)), v.tolerance.max(tiny)))
+    };
+    let ((a, ta), (b, tb)) = (end(0)?, end(1)?);
+    if (a.dist(c) - r).abs() > ta || (b.dist(c) - r).abs() > tb {
+        return None;
+    }
+    if a.dist(b) <= ta.max(tb) {
+        return Some(LinkGeom::Circle(c, r));
+    }
+    let [t0, t1] = edge.interval;
+    let m = plane.to_local(CurveEval::new(edge.parameters()).ok()?.point(0.5 * (t0 + t1))?);
+    let turn = |p: Vec2| ((p - c).angle() - (a - c).angle()).rem_euclid(std::f64::consts::TAU);
+    Some(if turn(m) < turn(b) { LinkGeom::Arc { c, a, b } } else { LinkGeom::Arc { c, a: b, b: a } })
+}
