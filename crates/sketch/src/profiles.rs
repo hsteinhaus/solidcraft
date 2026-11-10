@@ -2356,4 +2356,30 @@ mod tests {
         }
         assert!(inside > 3000, "{inside}");
     }
+
+    /// An ellipse cut by a line: each region's boundary is the line and exact pieces of the
+    /// ellipse up to the crossing. The cut polyline piece next to the crossing is not left a chord.
+    #[test]
+    fn an_ellipse_cut_by_a_line_keeps_exact_pieces_up_to_the_crossing() {
+        let mut sk = Sketch::new();
+        let (c, m) = (sk.add_point(Vec2::new(0.0, 0.0), None).unwrap(), sk.add_point(Vec2::new(25.0, 0.0), None).unwrap());
+        sk.add_curve(CurveKind::Ellipse { c, m, r: 14.0 }, None).unwrap();
+        sk.add_line(Vec2::new(-40.0, 11.0), Vec2::new(40.0, 11.0), None, None, None).unwrap();
+        let profiles = find_profiles(&sk);
+        assert_eq!(profiles.len(), 2);
+        let on_ellipse = |p: Vec2| ((p.x / 25.0).powi(2) + (p.y / 14.0).powi(2) - 1.0).abs() < 1e-9;
+        for p in &profiles {
+            let segs = &p.region.outer.segs;
+            let lines: Vec<&Seg2> = segs.iter().filter(|s| matches!(s, Seg2::Line { .. })).collect();
+            assert_eq!(lines.len(), 1, "{segs:?}");
+            for s in segs {
+                assert!(on_ellipse(s.start()) && on_ellipse(s.end()), "{s:?}");
+                if let Seg2::Line { a, b } = s {
+                    assert!((a.y - 11.0).abs() < 1e-9 && (b.y - 11.0).abs() < 1e-9, "{s:?}");
+                } else {
+                    assert!(on_ellipse(s.point_at(0.5)), "{s:?}");
+                }
+            }
+        }
+    }
 }
