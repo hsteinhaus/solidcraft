@@ -524,11 +524,14 @@ fn exact_edges(body: &crate::ModelBody, plane: &Plane, edges: &[usize]) -> Vec<O
         PlanarPiece::Spline(s) => link_spline(s),
     };
     let mut mesh = None;
+    let cylinder_arcs: BTreeMap<usize, LinkGeom> =
+        edges.iter().filter_map(|e| exact_section::cylinder_arc(body, plane, *e).map(|g| (*e, g))).collect();
     body.body
         .planar_edges(plane, edges)
         .into_iter()
         .zip(edges)
         .map(|(pieces, e)| match pieces {
+            _ if cylinder_arcs.contains_key(e) => cylinder_arcs.get(e).cloned().map(|g| vec![g]),
             Some(pieces) if !pieces.iter().any(free_form) => pieces.iter().map(link).collect(),
             Some(pieces) => {
                 let samples: Option<Vec<Vec2>> = pieces.iter().map(piece_samples).collect::<Option<Vec<_>>>().map(|s| s.concat());
