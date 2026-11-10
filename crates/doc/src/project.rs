@@ -26,6 +26,8 @@ const AXIS_HALF: f64 = 100.0;
 /// Points in one fitted chain at most (longer chains are thinned).
 const MAX_CHAIN: usize = 4000;
 
+#[path = "project_section.rs"]
+mod exact_section;
 #[path = "project_order.rs"]
 mod order;
 
@@ -146,7 +148,7 @@ fn resolve_uncached(
             let name = st.bodies.get(bi).map(|b| b.name.clone()).unwrap_or_else(|| body.clone());
             source = LinkSource::Face { body: name, at: q };
             match kind {
-                LinkKind::Intersect => section(plane, &mesh, Some(f)),
+                LinkKind::Intersect => exact_cut(st.bodies.get(bi), &mesh, plane, Some(f)),
                 _ => {
                     let target = st.bodies.get(bi).ok_or_else(|| lost("the projection body"))?;
                     let g = projected_edges(target, &mesh, plane, &projection_face_edges(target, &mesh, f, plane)?);
@@ -158,7 +160,7 @@ fn resolve_uncached(
             let b = st.body(body).ok_or_else(|| lost(&format!("body {body}")))?;
             let mesh = b.mesh();
             match kind {
-                LinkKind::Intersect => section(plane, &mesh, None),
+                LinkKind::Intersect => exact_cut(Some(b), &mesh, plane, None),
                 _ => silhouette(plane, &mesh, Some(&b.body)),
             }
         }
@@ -809,7 +811,7 @@ fn resolve_named_face(st: &ModelState, plane: &Plane, kind: LinkKind, body: &str
     let face_index = Some(index);
     let index = u32::try_from(index).map_err(|_| DocError::Invalid("named projection face index exceeds limit".into()))?;
     let geom = if kind == LinkKind::Intersect {
-        section(plane, &mesh, Some(index))
+        exact_cut(Some(target), &mesh, plane, Some(index))
     } else {
         let geom = projected_edges(target, &mesh, plane, &projection_face_edges(target, &mesh, index, plane)?);
         let geom = merge_split_circles(geom);
@@ -877,7 +879,7 @@ pub fn resolve_face_indices(st: &ModelState, plane: &Plane, kind: LinkKind, body
     if kind == LinkKind::Intersect {
         for index in indices {
             let index = u32::try_from(*index).map_err(|_| DocError::Invalid("anchored face index exceeds format bounds".into()))?;
-            geometry.extend(section(plane, &mesh, Some(index)));
+            geometry.extend(exact_cut(Some(body), &mesh, plane, Some(index)));
         }
     } else {
         let edges = if let [index] = indices {
@@ -1617,6 +1619,14 @@ fn face_facing(body: &solidcraft_kernel::Body, face: u32, n: Vec3, sum: f64) -> 
         FaceSurface::Cone { axis, .. } if axis.vec().dot(n).abs() > 1.0 - 1e-12 => Some(side),
         _ => None,
     }
+}
+
+/// `body` (all of it, or face `face`) cut by `plane`: exact on analytic faces
+/// ([`exact_section`]), the rest on the mesh.
+fn exact_cut(body: Option<&crate::ModelBody>, mesh: &Mesh, plane: &Plane, face: Option<u32>) -> Vec<LinkGeom> {
+    let faces = face.map(|f| [f]);
+    body.and_then(|b| exact_section::section(b, mesh, plane, faces.as_ref().map(|f| f.as_slice()), |f| section(plane, mesh, Some(f))))
+        .unwrap_or_else(|| section(plane, mesh, face))
 }
 
 /// Section of a mesh (or one of its faces) with the sketch plane.
