@@ -337,6 +337,41 @@ fn intersect_is_the_exact_section_of_walls_and_rounds() {
     check(&mut s, 0.0, &[3.0], sides(0.0));
 }
 
+/// A plane along the rulings of an extruded free-form wall cuts it in those rulings, exactly
+/// (Pixracer_Basis' Sketch6 cuts the ellipse hole of Extrude4 through its minor axis: Fusion's
+/// lines end at z 5 and 33 to the last digit, the mesh's cut was up to 7.6e-5 off): here that
+/// ellipse, 25 by 14 and crossed by a rectangle's side 11 above its centre, extruded 1.2 and cut
+/// through its minor axis.
+#[test]
+fn intersect_is_the_exact_section_of_an_extruded_free_form_wall() {
+    let mut s = Session::default();
+    let id = run(&mut s, "sketch.create", json!({"plane": "XY"}))["sketch"].as_u64().unwrap();
+    run(&mut s, "sketch.ellipse", json!({"center": [0, 0], "major": [25, 0], "minor_radius": 14}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [-30, -20], "p1": [30, 11]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": id, "profiles": [{"point": [0, 0]}, {"point": [0, 12.5]}], "distance": 1.2}));
+    let name = s.model.state().bodies[0].name.clone();
+    run(&mut s, "sketch.create", json!({"plane": "YZ"}));
+    run(&mut s, "sketch.intersect", json!({"refs": [{"body": name}]}));
+    let si = inspect(&mut s);
+    let curves = si["curves"].as_array().unwrap().clone();
+    // By hand: the section is the rectangle |y| ≤ 14, 0 ≤ z ≤ 1.2; its corners are the ends on the wall.
+    let mut corners = 0;
+    for c in &curves {
+        assert_eq!(c["type"], "line", "{c}");
+        for k in ["start_at", "end_at"] {
+            let (a, b) = (c[k][0].as_f64().unwrap().abs(), c[k][1].as_f64().unwrap().abs());
+            let (lo, hi) = (a.min(b), a.max(b));
+            if hi > 13.0 {
+                assert!((hi - 14.0).abs() <= 1e-12 && (lo <= 1e-12 || (lo - 1.2).abs() <= 1e-12), "{c}");
+                corners += 1;
+            }
+        }
+    }
+    // Each corner ends a ruling and a line of the top or the bottom.
+    assert_eq!(corners, 8, "{si}");
+}
+
 /// An edge on a cylinder about the sketch normal projects to that circle's arc between its
 /// projected ends (Knoten_laminiert's 0.009 mm corner edge, Fusion's arc c6, came out a line):
 /// here a vertical r 3 round cut by a tilted plane that leaves the round's top 0.04 mm from its
