@@ -360,9 +360,10 @@ fn add_rigid_joints(s: &mut Session, pairs: &[(u64, u64, Mat)]) -> Result<Vec<u6
                 kind: JointKind::Rigid,
                 a: JointOrigin {
                     occurrence: *a,
+                    body: None,
                     snap: Snap::Frame { origin: point(m, Vec3::ZERO), z: vector(m, Vec3::Z), x: Some(vector(m, Vec3::X)) },
                 },
-                b: JointOrigin { occurrence: *b, snap: Snap::Frame { origin: Vec3::ZERO, z: Vec3::Z, x: Some(Vec3::X) } },
+                b: JointOrigin { occurrence: *b, body: None, snap: Snap::Frame { origin: Vec3::ZERO, z: Vec3::Z, x: Some(Vec3::X) } },
                 values: Vec::new(),
                 limits: Vec::new(),
                 flip: true,

@@ -6,7 +6,7 @@ use solidcraft_doc::motion::{ContactSet, ExplodedView, MotionStudy, StudyKey};
 use solidcraft_doc::{IDENTITY, Occurrence};
 
 fn at(occurrence: u64) -> JointOrigin {
-    JointOrigin { occurrence, snap: Snap::Point { point: Vec3::ZERO, z: None, x: None } }
+    JointOrigin { occurrence, body: None, snap: Snap::Point { point: Vec3::ZERO, z: None, x: None } }
 }
 
 fn joint(id: u64, a: u64, b: u64) -> Joint {
@@ -38,6 +38,7 @@ fn documents() -> (Document, Document) {
             name: "Typed origin".into(),
             origin: JointOrigin {
                 occurrence: 1,
+                body: None,
                 snap: Snap::FaceCenter {
                     pick: Vec3::new(1.0, 2.0, 3.0),
                     face: Some("F1:start@F10.2".into()),
@@ -47,7 +48,11 @@ fn documents() -> (Document, Document) {
         },
         NamedOrigin {
             name: "Foreign geometry".into(),
-            origin: JointOrigin { occurrence: 1, snap: Snap::CircleCenter { pick: Vec3::ZERO, face: Some("F99:end".into()), end: None, x: None } },
+            origin: JointOrigin {
+                occurrence: 1,
+                body: None,
+                snap: Snap::CircleCenter { pick: Vec3::ZERO, face: Some("F99:end".into()), end: None, x: None },
+            },
         },
         NamedOrigin { name: "Outside".into(), origin: at(9) },
     ];
@@ -118,6 +123,7 @@ fn copied_gears_take_their_picked_faces_along() {
     let circle = |face: &str| {
         Size::Circle(JointOrigin {
             occurrence: 1,
+            body: None,
             snap: Snap::CircleCenter { pick: Vec3::X, face: Some(face.into()), end: Some("F1:top".into()), x: None },
         })
     };
@@ -250,6 +256,7 @@ fn an_edge_origin_is_copied_onto_the_copys_edges() {
         name: "Corner".into(),
         origin: JointOrigin {
             occurrence: 1,
+            body: None,
             snap: Snap::Edge {
                 pick: Vec3::new(1.0, 2.0, 3.0),
                 edge: edge("F1:top|F1:side"),

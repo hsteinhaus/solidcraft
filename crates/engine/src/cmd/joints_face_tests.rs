@@ -323,7 +323,7 @@ fn origins_on_a_body_placed_by_an_offset_agree_named_or_not() {
     let wall = solidcraft_doc::joints::face_name_at(&s.doc, &st, 0, wall_pick, true);
     assert!(top.is_some() && wall.is_some(), "{top:?} {wall:?}");
     let resolve = |snap: Snap| {
-        let o = solidcraft_doc::joints::JointOrigin { occurrence: 0, snap };
+        let o = solidcraft_doc::joints::JointOrigin { occurrence: 0, body: None, snap };
         let m = solidcraft_doc::joints::resolve_origin(&s.doc, &st, &o).unwrap_or_else(|e| panic!("{e}"));
         (Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(m[2][0], m[2][1], m[2][2]))
     };
@@ -434,7 +434,7 @@ fn a_face_centre_stays_put_when_a_hole_in_its_face_moves_or_goes() {
     let top = face_name(&mut s, "Plate", pick);
     run(&mut s, "joint.origin", json!({"name": "Top", "face": top}));
     let by_point = |s: &Session| {
-        let o = solidcraft_doc::joints::JointOrigin { occurrence: occ(s, "Plate"), snap: Snap::FaceCenter { pick, face: None, x: None } };
+        let o = solidcraft_doc::joints::JointOrigin { occurrence: occ(s, "Plate"), body: None, snap: Snap::FaceCenter { pick, face: None, x: None } };
         let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), &o).ok()?;
         Some((Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(m[2][0], m[2][1], m[2][2])))
     };
@@ -636,7 +636,7 @@ fn jointed_arms_stay_together_as_the_arm_changes() {
 fn a_face_centre_on_no_flat_face_is_refused_not_moved_elsewhere() {
     let mut s = Session::default();
     run(&mut s, "solid.cylinder", json!({"radius": 5, "height": 10}));
-    let snap = |p: Vec3| solidcraft_doc::joints::JointOrigin { occurrence: 0, snap: Snap::FaceCenter { pick: p, face: None, x: None } };
+    let snap = |p: Vec3| solidcraft_doc::joints::JointOrigin { occurrence: 0, body: None, snap: Snap::FaceCenter { pick: p, face: None, x: None } };
     let st = s.model.state();
     let top = solidcraft_doc::joints::resolve_origin(&s.doc, &st, &snap(Vec3::new(1.0, 1.0, 10.0))).unwrap();
     assert!(near(Vec3::new(top[3][0], top[3][1], top[3][2]), Vec3::new(0.0, 0.0, 10.0)), "{top:?}");
