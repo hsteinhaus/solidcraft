@@ -239,8 +239,13 @@ fn restore_exact(segs: Vec<Seg2>, tags: &[Option<(Piece, bool)>], exact: &std::c
         let run: Vec<usize> = (i..j).map(|x| (r + x) % n).collect();
         let plain: Vec<Seg2> = run.iter().filter_map(|x| segs.get(*x).copied()).collect();
         let full = k0.and_then(|(ci, k, fwd)| exact.get(&ci).and_then(|e| e.get(k)).map(|s| if fwd { *s } else { s.reversed() }));
+        // Every piece once, in order, and none of the end pieces cut short by a crossing.
+        let ends = |seg: Seg2| {
+            let (a, b) = (plain.first().map(Seg2::start).unwrap_or_default(), plain.last().map(Seg2::end).unwrap_or_default());
+            seg.start().dist(a) < 1e-9 && seg.end().dist(b) < 1e-9
+        };
         let whole = match (full, tags.get(run[0]).copied().flatten()) {
-            (Some(_), Some(((_, _, _, cnt), fwd))) if run.len() == cnt => {
+            (Some(seg), Some(((_, _, _, cnt), fwd))) if run.len() == cnt && ends(seg) => {
                 let order: Vec<usize> = run.iter().filter_map(|x| tags.get(*x).copied().flatten().map(|((_, _, p, _), _)| p)).collect();
                 let want: Vec<usize> = if fwd { (0..cnt).collect() } else { (0..cnt).rev().collect() };
                 order == want
@@ -1422,8 +1427,9 @@ fn island_loops(sk: &Sketch, curves: &[usize], max_edges: usize) -> Island {
                 let mut ps = vec![a];
                 ps.extend(ts.iter().map(|t| sh.point(*t)));
                 ps.push(b);
-                // Pieces split by other curves no longer stand for their whole piece.
-                let tag = if ts.is_empty() { tags.get(k).copied().flatten() } else { None };
+                // Pieces split by other curves keep their segment: the exact part up to the crossing
+                // is put back.
+                let tag = tags.get(k).copied().flatten();
                 for (piece, w) in ps.windows(2).enumerate() {
                     let (p, q) = (w[0], w[1]);
                     if p.dist(q) > MERGE_TOL {
