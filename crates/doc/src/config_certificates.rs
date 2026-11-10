@@ -438,13 +438,13 @@ impl<'a> ExactSketchCurves<'a> {
     }
 
     /// The one free-form sketch curve (an ellipse, conic or spline) a generated segment is a
-    /// whole piece of, either way round: one of the exact segments the curve is made of. A
-    /// segment two curves share stays ambiguous.
+    /// piece of, either way round: one of the exact segments the curve is made of, or the part
+    /// of one a crossing curve left. A segment two curves share stays ambiguous.
     pub(crate) fn find_free_form(&self, generated: &Seg2) -> Option<String> {
         let reversed = generated.reversed();
         let mut found: Option<Option<&str>> = None;
         for (id, originals) in &self.free_form {
-            if originals.iter().any(|original| *original == *generated || *original == reversed) {
+            if originals.iter().any(|original| *original == *generated || *original == reversed || free_form_part(original, generated)) {
                 found = Some(if found.is_some() { None } else { Some(*id) });
             }
         }
@@ -631,6 +631,41 @@ impl ExactSketchCurves<'_> {
         }
         roles
     }
+}
+
+/// The control points of a free-form segment (a conic or a Bézier), none for a line or an arc.
+fn free_form_controls(s: &Seg2) -> Option<Vec<solidcore_record::Vec2>> {
+    match s {
+        Seg2::Conic { a, apex, b, .. } => Some(vec![*a, *apex, *b]),
+        Seg2::Cubic { p0, p1, p2, p3 } => Some(vec![*p0, *p1, *p2, *p3]),
+        Seg2::Bezier { n, p } => p.get(..=usize::from(*n)).map(<[_]>::to_vec),
+        Seg2::Line { .. } | Seg2::Arc { .. } => None,
+    }
+}
+
+/// `generated` is a part of the free-form segment `original`: of its degree, and lying on it at
+/// more points (degree² + 1) than two different curves of that degree can share.
+fn free_form_part(original: &Seg2, generated: &Seg2) -> bool {
+    let (Some(o), Some(g)) = (free_form_controls(original), free_form_controls(generated)) else { return false };
+    if o.len() != g.len() || std::mem::discriminant(original) != std::mem::discriminant(generated) {
+        return false;
+    }
+    let size = o.iter().fold(1.0_f64, |m, p| m.max(p.x.abs()).max(p.y.abs()));
+    let tol = 1e-10 * size;
+    // A curve lies within the box of its control points: most segments are told apart there.
+    let start = generated.start();
+    let outside = |at: f64, of: fn(&solidcore_record::Vec2) -> f64| {
+        let (lo, hi) = o.iter().map(of).fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| (lo.min(x), hi.max(x)));
+        at < lo - tol || at > hi + tol
+    };
+    if outside(start.x, |p| p.x) || outside(start.y, |p| p.y) {
+        return false;
+    }
+    let n = (o.len() - 1) * (o.len() - 1);
+    (0..=n).all(|i| {
+        let p = generated.point_at(i as f64 / n as f64);
+        original.point_at(original.closest_param(p)).dist(p) <= tol
+    })
 }
 
 fn exact_segment_contains(original: &Seg2, generated: &Seg2) -> bool {
