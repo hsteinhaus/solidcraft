@@ -400,6 +400,11 @@ impl Snap {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JointOrigin {
     pub occurrence: u64,
+    /// The body of the component the picks lay on (a component placed several times in a linked
+    /// design brings each placement in as a body with the same face and edge names): its names
+    /// are looked up on that body only, and the origin fails when the body is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
     pub snap: Snap,
 }
 
@@ -964,7 +969,29 @@ fn link_of(j: &Joint, q: &[f64]) -> Mat {
 
 /// Bodies of a component in the model (its own frame).
 fn component_bodies<'a>(doc: &Document, st: &'a ModelState, component: u64) -> Vec<&'a crate::ModelBody> {
-    st.bodies.iter().filter(|b| doc.model_body_component(b) == component).collect()
+    origin_bodies(doc, st, component, None)
+}
+
+/// Bodies of a component in the model, or only the one called `body` of them.
+fn origin_bodies<'a>(doc: &Document, st: &'a ModelState, component: u64, body: Option<&str>) -> Vec<&'a crate::ModelBody> {
+    st.bodies.iter().filter(|b| doc.model_body_component(b) == component && body.is_none_or(|n| b.name == n)).collect()
+}
+
+/// The body of `component` whose surface lies nearest `pick` (component coordinates), within
+/// reach of it (the first of bodies as near): the body a joint origin picked there keeps.
+pub fn body_at(doc: &Document, st: &ModelState, component: u64, pick: Vec3) -> Option<String> {
+    let mut best: Option<(f64, &crate::ModelBody)> = None;
+    for b in component_bodies(doc, st, component).into_iter().filter(|b| !b.body.is_mesh()) {
+        let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
+        let Some(inverse) = mat_inverse(&offset) else { continue };
+        let tol = (b.body.size() * 1e-3).max(1e-3);
+        if let Some((d, _)) = crate::appearance::nearest_face(b, apply_point(&inverse, pick)).filter(|(d, _)| *d <= tol)
+            && best.is_none_or(|(bd, _)| d < bd)
+        {
+            best = Some((d, b));
+        }
+    }
+    best.map(|(_, b)| b.name.clone())
 }
 
 /// The component an occurrence places (0 for the root).
@@ -977,9 +1004,9 @@ fn component_of(doc: &Document, occ: u64) -> Result<u64> {
 
 /// A snap's pick point moved onto its named face of `component` (an error when the face is gone:
 /// a joint must not quietly attach elsewhere).
-fn named_pick(doc: &Document, st: &ModelState, component: u64, pick: Vec3, face: Option<&str>) -> Result<Vec3> {
+fn named_pick(doc: &Document, st: &ModelState, component: u64, body: Option<&str>, pick: Vec3, face: Option<&str>) -> Result<Vec3> {
     match face {
-        Some(n) => face::named_face(doc, st, component, pick, n).map(|f| f.point),
+        Some(n) => face::named_face(doc, st, component, body, pick, n).map(|f| f.point),
         None => Ok(pick),
     }
 }
@@ -991,7 +1018,7 @@ fn named_pick(doc: &Document, st: &ModelState, component: u64, pick: Vec3, face:
 fn plane_at(doc: &Document, st: &ModelState, o: &JointOrigin, pick: Vec3) -> Result<(Vec3, Vec3)> {
     let comp = component_of(doc, o.occurrence)?;
     let mut best: Option<(f64, &crate::ModelBody, usize)> = None;
-    for b in component_bodies(doc, st, comp).into_iter().filter(|b| !b.body.is_mesh()) {
+    for b in origin_bodies(doc, st, comp, o.body.as_deref()).into_iter().filter(|b| !b.body.is_mesh()) {
         let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
         let Some(inverse) = mat_inverse(&offset) else { continue };
         let p = apply_point(&inverse, pick);
@@ -1016,7 +1043,7 @@ fn plane_at(doc: &Document, st: &ModelState, o: &JointOrigin, pick: Vec3) -> Res
 fn nearest_plane(doc: &Document, st: &ModelState, o: &JointOrigin, pick: Vec3) -> Result<(Vec3, Vec3)> {
     let comp = component_of(doc, o.occurrence)?;
     let mut best: Option<(f64, &crate::ModelBody, solidcraft_kernel::FaceInfo, Vec3)> = None;
-    for b in component_bodies(doc, st, comp).into_iter().filter(|b| !b.body.is_mesh()) {
+    for b in origin_bodies(doc, st, comp, o.body.as_deref()).into_iter().filter(|b| !b.body.is_mesh()) {
         let offset = doc.model_body_offset(b);
         for f in b.joint_faces()?.iter() {
             let Some(own) = f.plane_normal else { continue };
@@ -1048,6 +1075,14 @@ pub fn check_face_pick(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resu
 /// Resolve a joint origin to a frame in its component's coordinates.
 pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Result<Mat> {
     let bad = || DocError::Invalid("joint origin: degenerate frame".into());
+    let body = o.body.as_deref();
+    // Never another body of the component in place of the one picked: they can carry the same names.
+    if let Some(n) = body
+        && origin_bodies(doc, st, component_of(doc, o.occurrence)?, body).is_empty()
+    {
+        return Err(DocError::Invalid(format!("joint origin: the body `{n}` no longer exists (edit the joint to pick again)")));
+    }
+    let inner = |snap: &Snap| JointOrigin { occurrence: o.occurrence, body: o.body.clone(), snap: snap.clone() };
     match &o.snap {
         Snap::Frame { origin, z, x } => frame(*origin, *z, *x).ok_or_else(bad),
         Snap::Point { point, z, x } => frame(*point, z.unwrap_or(Vec3::Z), *x).ok_or_else(bad),
@@ -1056,7 +1091,7 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             // face the point lies on (a named face that isn't planar is an error there too).
             let comp = component_of(doc, o.occurrence)?;
             let named = match face.as_deref() {
-                Some(n) => Some(face::named_face(doc, st, comp, *pick, n)?),
+                Some(n) => Some(face::named_face(doc, st, comp, body, *pick, n)?),
                 None => None,
             };
             let (c, n) = match named.as_ref().map(face::NamedFace::plane).transpose()?.flatten() {
@@ -1072,9 +1107,9 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             };
             frame(c, n, face::x_axis(doc, st, comp, x.as_ref(), c)?).ok_or_else(bad)
         }
-        Snap::Edge { .. } => edge::edge_frame(doc, st, component_of(doc, o.occurrence)?, &o.snap),
+        Snap::Edge { .. } => edge::edge_frame(doc, st, component_of(doc, o.occurrence)?, body, &o.snap),
         Snap::Axes { snap, z, x } => {
-            let m = resolve_origin(doc, st, &JointOrigin { occurrence: o.occurrence, snap: (**snap).clone() })?;
+            let m = resolve_origin(doc, st, &inner(snap))?;
             let col = |i: usize| Vec3::new(m[i][0], m[i][1], m[i][2]);
             let comp = component_of(doc, o.occurrence)?;
             let dir = |r: &Option<AxisRef>, own: Vec3| r.as_ref().map_or(Ok(own), |r| axis_dir(doc, st, comp, r));
@@ -1083,17 +1118,17 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
         }
         Snap::Rim { pick, edge, x } => {
             let comp = component_of(doc, o.occurrence)?;
-            let (centre, z) = rim(doc, st, comp, *pick, edge)?;
+            let (centre, z) = rim(doc, st, comp, body, *pick, edge)?;
             frame(centre, z, face::x_axis(doc, st, comp, x.as_ref(), centre)?).ok_or_else(bad)
         }
         Snap::Vertex { pick, edges, z, x } => {
             let comp = component_of(doc, o.occurrence)?;
-            let at = vertex_point(doc, st, comp, *pick, edges)?;
+            let at = vertex_point(doc, st, comp, body, *pick, edges)?;
             frame(at, z.unwrap_or(Vec3::Z), face::x_axis(doc, st, comp, x.as_ref(), at)?).ok_or_else(bad)
         }
         Snap::Axial { pick, face: name, at, x } => {
             let comp = component_of(doc, o.occurrence)?;
-            let nf = face::named_face(doc, st, comp, *pick, name)?;
+            let nf = face::named_face(doc, st, comp, body, *pick, name)?;
             let c = nf.cylinder().ok_or_else(|| DocError::Invalid(format!("joint origin: face `{name}` is not round")))?;
             let along = match at {
                 AxialPoint::Start => c.start,
@@ -1114,12 +1149,14 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
                 n.name == *origin && !matches!(n.origin.snap, Snap::Linked { .. }) && component_of(doc, n.origin.occurrence).is_ok_and(|c| c == comp)
             });
             match own {
-                Some(n) => resolve_origin(doc, st, &JointOrigin { occurrence: o.occurrence, snap: n.origin.snap.clone() }),
+                Some(n) => {
+                    resolve_origin(doc, st, &JointOrigin { occurrence: o.occurrence, body: n.origin.body.clone(), snap: n.origin.snap.clone() })
+                }
                 None => Err(DocError::Invalid(format!("joint origin `{origin}`: the component defines no joint origin of that name"))),
             }
         }
         Snap::Offset { snap, x, y, z, angle, flip } => {
-            let m = resolve_origin(doc, st, &JointOrigin { occurrence: o.occurrence, snap: (**snap).clone() })?;
+            let m = resolve_origin(doc, st, &inner(snap))?;
             let axis = |i: usize| Vec3::new(m[i][0], m[i][1], m[i][2]);
             let params = Params::new(doc);
             let eval = |e: &Option<String>, kind: crate::expr::Kind| -> Result<f64> {
@@ -1150,9 +1187,9 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
 /// The circle of the edge named `edge` on the component's bodies (the one nearest `pick`, component
 /// coordinates): its centre and axis, the axis out of a flat face beside the edge that the circle
 /// lies in, else as the circle runs. An edge that is no circle is refused.
-fn rim(doc: &Document, st: &ModelState, component: u64, pick: Vec3, edge: &str) -> Result<(Vec3, Vec3)> {
+fn rim(doc: &Document, st: &ModelState, component: u64, body: Option<&str>, pick: Vec3, edge: &str) -> Result<(Vec3, Vec3)> {
     let mut best: Option<(f64, Vec3, Vec3)> = None;
-    for b in component_bodies(doc, st, component).into_iter().filter(|b| !b.body.is_mesh()) {
+    for b in origin_bodies(doc, st, component, body).into_iter().filter(|b| !b.body.is_mesh()) {
         let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
         let Some(inverse) = mat_inverse(&offset) else { continue };
         let p = apply_point(&inverse, pick);
@@ -1190,7 +1227,7 @@ fn axis_dir(doc: &Document, st: &ModelState, component: u64, r: &AxisRef) -> Res
             _ => Err(DocError::Unknown(format!("joint origin: construction plane `{plane}`"))),
         },
         AxisRef::Face { face: name, pick } => {
-            let nf = face::named_face(doc, st, component, *pick, name)?;
+            let nf = face::named_face(doc, st, component, None, *pick, name)?;
             if let Some((_, n)) = nf.plane()? {
                 Ok(n)
             } else if let Some(c) = nf.cylinder() {
@@ -1286,9 +1323,9 @@ pub fn vertex_edges(doc: &Document, st: &ModelState, component: u64, pick: Vec3)
 
 /// The vertex where the edges `edges` name meet, on a body of the component (component
 /// coordinates; the one nearest `pick` when there are several).
-fn vertex_point(doc: &Document, st: &ModelState, component: u64, pick: Vec3, edges: &[String]) -> Result<Vec3> {
+fn vertex_point(doc: &Document, st: &ModelState, component: u64, body: Option<&str>, pick: Vec3, edges: &[String]) -> Result<Vec3> {
     let mut best: Option<(f64, Vec3)> = None;
-    for b in component_bodies(doc, st, component).into_iter().filter(|b| !b.body.is_mesh()) {
+    for b in origin_bodies(doc, st, component, body).into_iter().filter(|b| !b.body.is_mesh()) {
         let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
         let Some(inverse) = mat_inverse(&offset) else { continue };
         let p = apply_point(&inverse, pick);
@@ -1337,14 +1374,14 @@ fn round_of(doc: &Document, st: &ModelState, o: &JointOrigin) -> Result<face::Ro
     let Snap::CircleCenter { pick, face, end, .. } = &o.snap else { return Err(DocError::Invalid("pick a round face".into())) };
     let comp = component_of(doc, o.occurrence)?;
     if let Some(n) = face.as_deref()
-        && let Some(r) = face::named_round(doc, st, comp, *pick, n, end.as_deref())?
+        && let Some(r) = face::named_round(doc, st, comp, o.body.as_deref(), *pick, n, end.as_deref())?
     {
         return Ok(r);
     }
-    let pick = named_pick(doc, st, comp, *pick, face.as_deref())?;
+    let pick = named_pick(doc, st, comp, o.body.as_deref(), *pick, face.as_deref())?;
     // A body moved in from another component: looked at in its own coordinates, its cylinder
     // placed by its offset (as a named face is).
-    let cyl = component_bodies(doc, st, comp)
+    let cyl = origin_bodies(doc, st, comp, o.body.as_deref())
         .into_iter()
         .filter_map(|b| match doc.model_body_offset(b) {
             Some(m) => solidcraft_kernel::cylinder_face_at(&b.body, apply_point(&mat_inverse(m)?, pick)).map(|c| face::placed(m, c)),
@@ -2870,7 +2907,7 @@ mod tests {
     /// Revolute joints 1…n (joint 1 at `start`, the others at 0) linked 1 → 2 → … → n with
     /// ratio 2, the links stored from the end of the chain; joint 3 limited to ±50.
     pub(super) fn chain(n: u64, start: f64) -> Assembly {
-        let origin = JointOrigin { occurrence: 0, snap: Snap::Point { point: Vec3::ZERO, z: None, x: None } };
+        let origin = JointOrigin { occurrence: 0, body: None, snap: Snap::Point { point: Vec3::ZERO, z: None, x: None } };
         let joints = (1..=n)
             .map(|id| Joint {
                 id,

@@ -75,7 +75,7 @@ pub(super) fn source(s: &Session, p: &Value, cmd: &str) -> Result<MotionTrace> {
             }
             o
         }
-        None => JointOrigin { occurrence: occurrence.last().copied().unwrap_or(0), snap: Snap::Point { point: local, z: None, x: None } },
+        None => JointOrigin { occurrence: occurrence.last().copied().unwrap_or(0), body: None, snap: Snap::Point { point: local, z: None, x: None } },
     };
     let referenced = apply_point(&joints::resolve_origin(&s.doc, &s.model.state(), &point)?, Vec3::ZERO);
     if referenced.dist(local) > 1e-4 {

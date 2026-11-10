@@ -124,12 +124,12 @@ fn an_edge_origin_on_a_body_placed_by_an_offset_lands_on_that_edge() {
     let up = solidcraft_doc::apply_vector(&offset, Vec3::Z);
     let st = s.model.state();
     let resolve = |snap: solidcraft_doc::joints::Snap| {
-        let o = solidcraft_doc::joints::JointOrigin { occurrence: 0, snap };
+        let o = solidcraft_doc::joints::JointOrigin { occurrence: 0, body: None, snap };
         let m = solidcraft_doc::joints::resolve_origin(&s.doc, &st, &o).unwrap_or_else(|e| panic!("{e}"));
         (Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(m[2][0], m[2][1], m[2][2]))
     };
     // The middle of the top face's front edge, and the corner at the plate's own origin.
-    let middle = solidcraft_doc::joints::edge_snap(&s.doc, &st, 0, at(Vec3::new(20.0, 0.0, 5.0)), Some(at(Vec3::new(20.0, 10.0, 5.0))), None)
+    let middle = solidcraft_doc::joints::edge_snap(&s.doc, &st, 0, None, at(Vec3::new(20.0, 0.0, 5.0)), Some(at(Vec3::new(20.0, 10.0, 5.0))), None)
         .unwrap_or_else(|e| panic!("{e}"));
     let (o, z) = resolve(middle);
     assert!(near(o, at(Vec3::new(20.0, 0.0, 5.0))) && near(z, up), "{o:?} {z:?}");
@@ -137,6 +137,7 @@ fn an_edge_origin_on_a_body_placed_by_an_offset_lands_on_that_edge() {
         &s.doc,
         &st,
         0,
+        None,
         at(Vec3::new(20.0, 0.0, 5.0)),
         Some(at(Vec3::new(20.0, 10.0, 5.0))),
         Some(at(Vec3::new(1.0, 0.0, 5.0))),

@@ -479,7 +479,7 @@ fn origin_snap_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointO
     // A joint origin a linked design defines, by the placement and its name there.
     if let Some(name) = v.get("origin").and_then(Value::as_str) {
         let occurrence = occurrence_id(s, v.get("occurrence"), cmd)?;
-        let o = JointOrigin { occurrence, snap: Snap::Linked { origin: name.to_string() } };
+        let o = JointOrigin { occurrence, body: None, snap: Snap::Linked { origin: name.to_string() } };
         joints::resolve_origin(&s.doc, &s.model.state(), &o).map_err(|e| {
             let comp = component_of(s, occurrence);
             let mut known: Vec<&str> = s.doc.links.get(&comp).map(|l| l.origins.iter().map(|o| o.name.as_str()).collect()).unwrap_or_default();
@@ -521,6 +521,13 @@ fn origin_snap_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointO
     let local_dir = |d: Vec3| solidcraft_doc::apply_vector(&inv, d);
     let component = component_of(s, occurrence);
     let st = s.model.state();
+    // The body picked, kept: the placements of a component inside a linked design are bodies of
+    // one component with the same names.
+    let body = if matches!(what, "face" | "circle" | "edge") { joints::body_at(&s.doc, &st, component, local(world)) } else { None };
+    let origin = |snap: Snap| {
+        let body = if matches!(snap, Snap::Point { .. } | Snap::Frame { .. }) { None } else { body.clone() };
+        JointOrigin { occurrence, body, snap }
+    };
     let snap = match what {
         "face" | "circle" => {
             let pick = local(world);
@@ -531,7 +538,7 @@ fn origin_snap_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointO
         }
         "edge" => {
             let (on, corner) = (v.get("on").and_then(vec3).map(local), v.get("corner").and_then(vec3).map(local));
-            let snap = joints::edge_snap(&s.doc, &st, component, local(world), on, corner);
+            let snap = joints::edge_snap(&s.doc, &st, component, body.as_deref(), local(world), on, corner);
             match given_z(v, &local_dir, cmd)? {
                 None => snap.map_err(|e| bad(cmd, e.to_string()))?,
                 // An edge or a corner picked as it is (z given): it follows the edge by name with
@@ -540,9 +547,9 @@ fn origin_snap_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointO
                 Some(z) => {
                     let at = corner.unwrap_or(local(world));
                     let point = Snap::Point { point: at, z: Some(z), x: None };
-                    let followed = snap.ok().map(|snap| joints::edge_axis(&s.doc, &st, component, snap, z));
-                    let o = followed.map(|snap| JointOrigin { occurrence, snap }).filter(|o| same_frame(s, o, at, z));
-                    return Ok(o.unwrap_or(JointOrigin { occurrence, snap: point }));
+                    let followed = snap.ok().map(|snap| joints::edge_axis(&s.doc, &st, component, body.as_deref(), snap, z));
+                    let o = followed.map(origin).filter(|o| same_frame(s, o, at, z));
+                    return Ok(o.unwrap_or(origin(point)));
                 }
             }
         }
@@ -566,7 +573,7 @@ fn origin_snap_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointO
             Snap::Frame { origin: local(world), z: local_dir(z), x: f.get("x").and_then(vec3).map(local_dir) }
         }
     };
-    let o = JointOrigin { occurrence, snap };
+    let o = origin(snap);
     // A round edge's centre with the z it was picked with: its end, by name, where that is the
     // frame it shows; else a point there as before.
     if what == "circle"
@@ -575,19 +582,18 @@ fn origin_snap_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointO
         let at = local(world);
         // The turn the point gave, kept.
         let point = Snap::Point { point: at, z: Some(z), x: None };
-        let px =
-            joints::resolve_origin(&s.doc, &st, &JointOrigin { occurrence, snap: point.clone() }).ok().map(|m| Vec3::new(m[0][0], m[0][1], m[0][2]));
+        let px = joints::resolve_origin(&s.doc, &st, &origin(point.clone())).ok().map(|m| Vec3::new(m[0][0], m[0][1], m[0][2]));
         let turn = |snap: Snap| match (snap, px) {
             (Snap::CircleCenter { pick, face, end, x: None }, Some(x)) => Snap::CircleCenter { pick, face, end, x: Some(XRef::Dir(x)) },
             (snap, _) => snap,
         };
-        let by_wall = settle(s, JointOrigin { occurrence, snap: turn(o.snap.clone()) }, v, cmd).ok();
+        let by_wall = settle(s, origin(turn(o.snap.clone())), v, cmd).ok();
         let by_centre = || {
             let snap = joints::round_end_at(&s.doc, &st, component, at)?;
-            settle(s, JointOrigin { occurrence, snap: turn(snap) }, v, cmd).ok()
+            settle(s, origin(turn(snap)), v, cmd).ok()
         };
         let found = by_wall.filter(|o| same_frame(s, o, at, z)).or_else(|| by_centre().filter(|o| same_frame(s, o, at, z)));
-        return Ok(found.unwrap_or(JointOrigin { occurrence, snap: point }));
+        return Ok(found.unwrap_or(origin(point)));
     }
     match settle(s, o, v, cmd) {
         Ok(o) => Ok(o),
@@ -605,7 +611,7 @@ fn origin_snap_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointO
                     }
                 },
             };
-            settle(s, JointOrigin { occurrence, snap }, v, cmd)
+            settle(s, origin(snap), v, cmd)
         }
         Err(e) => Err(e),
     }
@@ -669,7 +675,8 @@ fn origin_by_name(s: &Session, v: &Value, what: &str, name: &str, cmd: &str) -> 
     let x = x_param(s, v, component, &inv, cmd)?;
     let face = Some(name.to_string());
     let snap = if what == "face" { Snap::FaceCenter { pick, face, x } } else { Snap::CircleCenter { pick, face, end: None, x } };
-    settle(s, JointOrigin { occurrence, snap }, v, cmd)
+    let body = str_(v, "body").map(str::to_string).or_else(|| joints::body_at(&s.doc, &st, component, pick));
+    settle(s, JointOrigin { occurrence, body, snap }, v, cmd)
 }
 
 /// A new joint origin checked: `end?` (a circle's end, by the name of the face across its rim
@@ -715,7 +722,8 @@ fn vertex_origin(s: &Session, v: &Value, cmd: &str) -> Result<JointOrigin> {
     let edges = joints::vertex_edges(&s.doc, &s.model.state(), component, pick).ok_or_else(|| bad(cmd, "no vertex there whose edges have names"))?;
     let z = given_z(v, &|d| solidcraft_doc::apply_vector(&inv, d), cmd)?;
     let x = x_param(s, v, component, &inv, cmd)?;
-    let o = JointOrigin { occurrence, snap: Snap::Vertex { pick, edges, z, x } };
+    let body = joints::body_at(&s.doc, &s.model.state(), component, pick);
+    let o = JointOrigin { occurrence, body, snap: Snap::Vertex { pick, edges, z, x } };
     joints::resolve_origin(&s.doc, &s.model.state(), &o).map_err(|e| bad(cmd, e.to_string()))?;
     Ok(o)
 }
@@ -740,7 +748,8 @@ fn axial_origin(s: &Session, v: &Value, cmd: &str) -> Result<JointOrigin> {
     let component = component_of(s, occurrence);
     let face = joints::face_name_at(&s.doc, &s.model.state(), component, pick, true).ok_or_else(|| bad(cmd, "no named round face there"))?;
     let x = x_param(s, v, component, &inv, cmd)?;
-    let o = JointOrigin { occurrence, snap: Snap::Axial { pick, face, at, x } };
+    let body = joints::body_at(&s.doc, &s.model.state(), component, pick);
+    let o = JointOrigin { occurrence, body, snap: Snap::Axial { pick, face, at, x } };
     joints::resolve_origin(&s.doc, &s.model.state(), &o).map_err(|e| bad(cmd, e.to_string()))?;
     Ok(o)
 }
@@ -760,7 +769,7 @@ fn sketch_point_origin(s: &Session, v: &Value, cmd: &str) -> Result<JointOrigin>
     let t = if occurrence == 0 { solidcraft_doc::IDENTITY } else { joints::occurrence_world(&s.doc, occurrence) };
     let inv = solidcraft_doc::mat_inverse(&t).ok_or_else(|| bad(cmd, "occurrence transform"))?;
     let x = x_param(s, v, component, &inv, cmd)?;
-    let o = JointOrigin { occurrence, snap: Snap::SketchPoint { sketch, point: point.to_string(), x } };
+    let o = JointOrigin { occurrence, body: None, snap: Snap::SketchPoint { sketch, point: point.to_string(), x } };
     joints::resolve_origin(&s.doc, &s.model.state(), &o).map_err(|e| bad(cmd, e.to_string()))?;
     Ok(o)
 }
@@ -1180,10 +1189,13 @@ fn as_built(s: &mut Session, p: &Value) -> Result<Value> {
     };
     // An origin on A or B is kept as it is on that side, so the joint follows its face or hole
     // as the design changes; the other side holds the frame where it is now.
-    let side = |occ: u64| -> Result<Snap> {
+    let side = |occ: u64| -> Result<JointOrigin> {
         match &at {
-            Some(o) if o.occurrence == occ => Ok(o.snap.clone()),
-            _ => s.doc.frame_in_occurrence(occ, &w).ok_or_else(|| bad(cmd, "occurrence transform")),
+            Some(o) if o.occurrence == occ => Ok(o.clone()),
+            _ => {
+                let snap = s.doc.frame_in_occurrence(occ, &w).ok_or_else(|| bad(cmd, "occurrence transform"))?;
+                Ok(JointOrigin { occurrence: occ, body: None, snap })
+            }
         }
     };
     let fa = side(oa)?;
@@ -1195,8 +1207,8 @@ fn as_built(s: &mut Session, p: &Value) -> Result<Value> {
         id,
         name,
         kind,
-        a: JointOrigin { occurrence: oa, snap: fa },
-        b: JointOrigin { occurrence: ob, snap: fb },
+        a: fa,
+        b: fb,
         values: vec![0.0; n],
         limits: limits_param(s, p, kind, cmd)?,
         flip: true, // as built: the origins coincide as they are, not mated

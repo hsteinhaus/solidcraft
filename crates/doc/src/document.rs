@@ -3628,6 +3628,10 @@ impl Document {
         if let Some(o) = self.body_offsets.remove(old) {
             self.body_offsets.insert(new.to_string(), o);
         }
+        let origins = self.assembly.origins.iter_mut().map(|n| &mut n.origin);
+        for o in origins.chain(self.assembly.joints.iter_mut().flat_map(|j| [&mut j.a, &mut j.b])).filter(|o| o.body.as_deref() == Some(old)) {
+            o.body = Some(new.to_string());
+        }
         if let Some(c) = self.body_components.remove(old) {
             self.body_components.insert(new.to_string(), c);
         }

@@ -11,7 +11,7 @@
 use solidcore_record::Vec3;
 use solidcraft_geom::prelude::*;
 
-use super::{EdgeAxis, Snap, component_bodies, frame};
+use super::{EdgeAxis, Snap, frame, origin_bodies};
 use crate::{DocError, Document, IDENTITY, Mat, ModelBody, ModelState, Result, apply_point, mat_inverse, mat_mul};
 
 /// A body's placement in its component and its inverse: a body moved in from another component
@@ -107,12 +107,12 @@ fn meeting(e: &[Vec3], f: &[Vec3], tol: f64) -> Option<Vec3> {
         .map(|(a, _)| a)
 }
 
-/// The frame of an edge snap in its component's coordinates.
-pub(super) fn edge_frame(doc: &Document, st: &ModelState, comp: u64, snap: &Snap) -> Result<Mat> {
+/// The frame of an edge snap in its component's coordinates (on its body `body`, when given).
+pub(super) fn edge_frame(doc: &Document, st: &ModelState, comp: u64, body: Option<&str>, snap: &Snap) -> Result<Mat> {
     let Snap::Edge { pick, edge, face, corner, axis } = snap else { return Err(DocError::Invalid("not an edge origin".into())) };
     let bad = || DocError::Invalid("joint origin: degenerate frame".into());
     let gone = |what: &str| DocError::Invalid(format!("joint origin: {what} no longer exists (edit the joint to pick again)"));
-    let found = component_bodies(doc, st, comp).into_iter().find_map(|b| {
+    let found = origin_bodies(doc, st, comp, body).into_iter().find_map(|b| {
         let (m, inv) = placement(doc, b);
         let local = apply_point(&inv, *pick);
         edge_index(b, edge.as_deref(), local).map(|i| (b, i, local, m))
@@ -168,18 +168,18 @@ pub(super) fn edge_frame(doc: &Document, st: &ModelState, comp: u64, snap: &Snap
     Ok(mat_mul(&placed, &local))
 }
 
-/// An edge snap for an edge picked at `pick` on component `comp` (its own coordinates): on the
-/// planar face holding `on` (default: the larger planar face beside the edge), at the edge's
-/// middle or, with `corner`, at the end nearest it. The edge, the face and the corner's other
-/// edge are kept by name.
-pub fn edge_snap(doc: &Document, st: &ModelState, comp: u64, pick: Vec3, on: Option<Vec3>, corner: Option<Vec3>) -> Result<Snap> {
-    let (b, i, inv) = component_bodies(doc, st, comp)
+/// An edge snap for an edge picked at `pick` on component `comp` (its own coordinates; on its body
+/// `body`, when given, else the body nearest): on the planar face holding `on` (default: the
+/// larger planar face beside the edge), at the edge's middle or, with `corner`, at the end nearest
+/// it. The edge, the face and the corner's other edge are kept by name.
+pub fn edge_snap(doc: &Document, st: &ModelState, comp: u64, body: Option<&str>, pick: Vec3, on: Option<Vec3>, corner: Option<Vec3>) -> Result<Snap> {
+    let (_, b, i, inv) = origin_bodies(doc, st, comp, body)
         .into_iter()
         .filter_map(|b| {
             let (_, inv) = placement(doc, b);
-            nearest_edge(b, apply_point(&inv, pick)).filter(|(_, d)| *d <= tol(b)).map(|(i, _)| (b, i, inv))
+            nearest_edge(b, apply_point(&inv, pick)).filter(|(_, d)| *d <= tol(b)).map(|(i, d)| (d, b, i, inv))
         })
-        .next()
+        .reduce(|best, c| if c.0 < best.0 { c } else { best })
         .ok_or_else(|| DocError::Invalid("joint origin: no edge there".into()))?;
     // The picks in the body's own coordinates; the snap keeps the pick as given.
     let (local, on, corner) = (apply_point(&inv, pick), on.map(|p| apply_point(&inv, p)), corner.map(|c| apply_point(&inv, c)));
@@ -232,13 +232,14 @@ pub fn edge_snap(doc: &Document, st: &ModelState, comp: u64, pick: Vec3, on: Opt
     Ok(Snap::Edge { pick, edge: names.get(i).cloned().filter(|n| !n.is_empty()), face, corner, axis: None })
 }
 
-/// Edge snap `snap` of component `comp` given z `z` (component coordinates) of its own: along the
-/// edge when the edge runs that way (so a hinge on it keeps turning about it), else fixed.
-pub fn edge_axis(doc: &Document, st: &ModelState, comp: u64, snap: Snap, z: Vec3) -> Snap {
+/// Edge snap `snap` of component `comp` (on its body `body`, when given) given z `z` (component
+/// coordinates) of its own: along the edge when the edge runs that way (so a hinge on it keeps
+/// turning about it), else fixed.
+pub fn edge_axis(doc: &Document, st: &ModelState, comp: u64, body: Option<&str>, snap: Snap, z: Vec3) -> Snap {
     let Snap::Edge { pick, edge, face, corner, .. } = snap else { return snap };
     let with = |axis| Snap::Edge { pick, edge: edge.clone(), face: face.clone(), corner: corner.clone(), axis: Some(axis) };
     let along = with(EdgeAxis::Along(z));
-    let runs =
-        edge_frame(doc, st, comp, &along).is_ok_and(|m| z.normalized().is_some_and(|z| Vec3::new(m[2][0], m[2][1], m[2][2]).dot(z) > 1.0 - 1e-9));
+    let runs = edge_frame(doc, st, comp, body, &along)
+        .is_ok_and(|m| z.normalized().is_some_and(|z| Vec3::new(m[2][0], m[2][1], m[2][2]).dot(z) > 1.0 - 1e-9));
     if runs { along } else { with(EdgeAxis::Fixed(z)) }
 }
