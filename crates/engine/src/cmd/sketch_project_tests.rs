@@ -337,6 +337,37 @@ fn intersect_is_the_exact_section_of_walls_and_rounds() {
     check(&mut s, 0.0, &[3.0], sides(0.0));
 }
 
+/// An edge on a cylinder about the sketch normal projects to that circle's arc between its
+/// projected ends (Knoten_laminiert's 0.009 mm corner edge, Fusion's arc c6, came out a line):
+/// here a vertical r 3 round cut by a tilted plane that leaves the round's top 0.04 mm from its
+/// end: the short elliptical edge there, seen from below.
+#[test]
+fn an_edge_on_a_cylinder_about_the_normal_projects_to_its_arc() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 10, "corner": [0, 0, 0]}));
+    run(&mut s, "solid.fillet", json!({"radius": 3, "edges": [[0, 0, 5]]}));
+    let name = s.model.state().bodies[0].name.clone();
+    // z = 7.87 + (20 - x - y) / 8: 9.995 at the round's end (0, 3), 10 where x + y = 2.96.
+    run(&mut s, "solid.split_body", json!({"body": name, "plane": {"origin": [10, 10, 7.87], "normal": [1, 1, 8]}}));
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    let on_round = |t: f64| (3.0 - 3.0 * t.cos(), 3.0 - 3.0 * t.sin());
+    let end = ((6.0 - 2.96) / 3.0 / 2f64.sqrt()).asin() - std::f64::consts::FRAC_PI_4;
+    let (x, y) = on_round(end / 2.0);
+    let r = run(&mut s, "sketch.project", json!({"refs": [{"body": name, "edge": [x, y, 7.87 + (20.0 - x - y) / 8.0]}]}));
+    let si = inspect(&mut s);
+    let ids = r["links"][0]["curves"].as_array().unwrap().clone();
+    assert_eq!(ids.len(), 1, "{r}");
+    let c = si["curves"].as_array().unwrap().iter().find(|c| c["id"] == ids[0]).unwrap().clone();
+    assert_eq!(c["type"], "arc", "{c}");
+    let at = |k: &str| (c[k][0].as_f64().unwrap(), c[k][1].as_f64().unwrap());
+    let near = |p: (f64, f64), q: (f64, f64)| (p.0 - q.0).hypot(p.1 - q.1) <= 1e-9;
+    assert!(near(at("center_at"), (3.0, 3.0)), "{c}");
+    assert!((c["radius"].as_f64().unwrap() - 3.0).abs() <= 1e-9, "{c}");
+    let (a, b) = (at("start_at"), at("end_at"));
+    let far = on_round(end);
+    assert!((near(a, (0.0, 3.0)) && near(b, far)) || (near(a, far) && near(b, (0.0, 3.0))), "{c} {far:?}");
+}
+
 #[test]
 fn break_link_makes_normal_geometry() {
     let mut s = Session::default();
