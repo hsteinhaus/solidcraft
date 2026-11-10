@@ -296,6 +296,47 @@ fn intersect_cuts_a_body_with_the_sketch_plane() {
     assert_eq!(si["profiles"].as_array().unwrap().len(), 1);
 }
 
+/// A plane cutting a filleted, shelled box through its walls and rounds gives the exact
+/// section: lines between their exact ends and arcs on the rounds' axes, at the exact radius
+/// (Knoten_laminiert's "Origin oben" took Fusion's to 1e-9, the mesh's cut was 2e-5 off); a
+/// plane on the bottom face gives that face's edges themselves.
+#[test]
+fn intersect_is_the_exact_section_of_walls_and_rounds() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 40, "height": 10, "corner": [0, 0, 0]}));
+    run(&mut s, "solid.fillet", json!({"radius": 3, "edges": [[0, 0, 5], [40, 0, 5], [0, 40, 5], [40, 40, 5]]}));
+    run(&mut s, "solid.shell", json!({"faces": [[20, 20, 10]], "thickness": 1}));
+    let name = s.model.state().bodies[0].name.clone();
+    let corners = [(3.0, 3.0), (37.0, 3.0), (3.0, 37.0), (37.0, 37.0)];
+    let sides = |d: f64| {
+        let (a, b) = (3.0, 37.0);
+        let (lo, hi) = (d, 40.0 - d);
+        vec![(lo, a), (lo, b), (hi, a), (hi, b), (a, lo), (b, lo), (a, hi), (b, hi)]
+    };
+    let check = |s: &mut Session, offset: f64, radii: &[f64], ends: Vec<(f64, f64)>| {
+        run(s, "sketch.create", json!({"plane": "XY", "offset": offset}));
+        run(s, "sketch.intersect", json!({"refs": [{"body": name}]}));
+        let si = inspect(s);
+        let curves = si["curves"].as_array().unwrap().clone();
+        let at = |c: &Value, k: &str| (c[k][0].as_f64().unwrap(), c[k][1].as_f64().unwrap());
+        let near = |p: (f64, f64), set: &[(f64, f64)]| set.iter().any(|q| (p.0 - q.0).hypot(p.1 - q.1) <= 1e-9);
+        for c in &curves {
+            assert!(near(at(c, "start_at"), &ends) && near(at(c, "end_at"), &ends), "z {offset}: {c}");
+            if c["type"] == "arc" {
+                assert!(near(at(c, "center_at"), &corners), "z {offset}: {c}");
+                let r = c["radius"].as_f64().unwrap();
+                assert!(radii.iter().any(|q| (r - q).abs() <= 1e-9), "z {offset}: {c}");
+            } else {
+                assert_eq!(c["type"], "line", "z {offset}: {c}");
+            }
+        }
+        assert_eq!(curves.len(), 8 * radii.len(), "z {offset}: {si}");
+        run(s, "sketch.finish", json!({}));
+    };
+    check(&mut s, 4.0, &[3.0, 2.0], [sides(0.0), sides(1.0)].concat());
+    check(&mut s, 0.0, &[3.0], sides(0.0));
+}
+
 #[test]
 fn break_link_makes_normal_geometry() {
     let mut s = Session::default();
