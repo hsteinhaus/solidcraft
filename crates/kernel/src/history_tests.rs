@@ -369,3 +369,31 @@ fn collinear_profile_lines_taper_into_one_side_face() {
         );
     }
 }
+
+/// A hole with an ellipse's one wall, cut again by the same ellipse begun at its other end
+/// (as a pattern's half-turn instance lands on the hole opposite): the wall stays one face.
+#[test]
+fn a_cut_along_its_own_free_form_wall_keeps_the_wall_one_face() {
+    use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2};
+    let v = Vec2::new;
+    let (c, u, w) = (v(1.0, 2.0), v(10.0, 0.0), v(0.0, 5.0));
+    let corners = [c + u, c + w, c - u, c - w];
+    let ellipse = |from: usize| {
+        let segs = (0..4)
+            .map(|i| {
+                let (a, b) = (corners[(from + i) % 4], corners[(from + i + 1) % 4]);
+                Seg2::Conic { a, apex: a + b - c, b, w: std::f64::consts::FRAC_1_SQRT_2 }
+            })
+            .collect();
+        let region = Region2 { outer: Loop2 { segs }, holes: vec![] };
+        crate::extrude_whole_sides(&Plane::XY, &[region], -1.0, 8.0, &|_, _| true).unwrap().remove(0)
+    };
+    let block = Region2 { outer: Loop2::polygon(&[v(-20.0, -10.0), v(20.0, -10.0), v(20.0, 15.0), v(-20.0, 15.0)]), holes: vec![] };
+    let block = crate::extrude_whole_sides(&Plane::XY, &[block], 0.0, 7.0, &|_, _| false).unwrap().remove(0);
+    let holed = crate::boolean(&block, &ellipse(0), crate::BoolOp::Cut).unwrap().unwrap();
+    assert_eq!(holed.face_count(), 7);
+    for from in [0, 2] {
+        let again = crate::boolean(&holed, &ellipse(from), crate::BoolOp::Cut).unwrap().unwrap();
+        assert_eq!(again.face_count(), 7, "cut again by the ellipse begun at corner {from}");
+    }
+}
