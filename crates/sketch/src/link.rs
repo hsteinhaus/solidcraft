@@ -53,6 +53,11 @@ pub enum LinkSource {
     SketchCurve { sketch: u64, curve: String },
     /// A point of another sketch.
     SketchPoint { sketch: u64, point: String },
+    /// A curve of a sketch of the design linked into occurrence `occurrence`'s component (the
+    /// sketch by its name there), through the occurrence's placement.
+    LinkedSketchCurve { occurrence: u64, sketch: String, curve: String },
+    /// A point of a linked design's sketch, as [`LinkSource::LinkedSketchCurve`].
+    LinkedSketchPoint { occurrence: u64, sketch: String, point: String },
     /// The model origin.
     Origin,
     /// An origin axis (`X`, `Y`, `Z`).
@@ -142,6 +147,8 @@ impl LinkSource {
             LinkSource::Vertex { body, .. } => of_body("vertex", body),
             LinkSource::SketchCurve { curve, .. } => format!("sketch curve {curve}"),
             LinkSource::SketchPoint { point, .. } => format!("sketch point {point}"),
+            LinkSource::LinkedSketchCurve { sketch, curve, .. } => format!("{sketch} curve {curve} of a linked design"),
+            LinkSource::LinkedSketchPoint { sketch, point, .. } => format!("{sketch} point {point} of a linked design"),
             LinkSource::Origin => "origin".into(),
             LinkSource::Axis { name } => format!("{name} axis"),
             LinkSource::SketchAxis { name } => format!("sketch {name} axis"),
@@ -171,6 +178,8 @@ impl LinkSource {
             }
             LinkSource::SketchCurve { .. }
             | LinkSource::SketchPoint { .. }
+            | LinkSource::LinkedSketchCurve { .. }
+            | LinkSource::LinkedSketchPoint { .. }
             | LinkSource::Origin
             | LinkSource::Axis { .. }
             | LinkSource::SketchAxis { .. }

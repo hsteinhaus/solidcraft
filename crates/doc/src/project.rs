@@ -186,23 +186,17 @@ fn resolve_uncached(
         LinkSource::SketchCurve { sketch, curve } => {
             let ss = st.sketch(*sketch).ok_or_else(|| lost(&format!("sketch {sketch}")))?;
             let ci = ss.sketch.curve_index(curve).ok_or_else(|| lost(&format!("sketch curve {curve}")))?;
-            match kind {
-                LinkKind::Intersect => {
-                    let pts: Vec<Vec3> = ss.sketch.segs(ci).iter().flat_map(|s| s.polyline(1e-3)).map(|p| ss.plane.to_world(p)).collect();
-                    section_of_polyline(plane, &pts)
-                }
-                LinkKind::Include => {
-                    let pts: Vec<Vec3> = ss.sketch.polyline(ci).iter().map(|p| ss.plane.to_world(*p)).collect();
-                    if off_plane(plane, &pts) {
-                        wires.push(pts);
-                        exact.push(sketch_curves(ss, ci));
-                        Vec::new()
-                    } else {
-                        project_sketch_curve(&ss.sketch, &ss.plane, ci, plane)
-                    }
-                }
-                _ => project_sketch_curve(&ss.sketch, &ss.plane, ci, plane),
-            }
+            sketch_curve_geom(&ss.sketch, &ss.plane, ci, plane, kind, &mut wires, &mut exact)
+        }
+        LinkSource::LinkedSketchCurve { occurrence, sketch, curve } => {
+            let (sk, from) = linked_sketch(doc, *occurrence, sketch)?;
+            let ci = sk.curve_index(curve).ok_or_else(|| lost(&format!("curve {curve} of the linked sketch {sketch}")))?;
+            sketch_curve_geom(sk, &from, ci, plane, kind, &mut wires, &mut exact)
+        }
+        LinkSource::LinkedSketchPoint { occurrence, sketch, point } => {
+            let (sk, from) = linked_sketch(doc, *occurrence, sketch)?;
+            let pi = sk.resolve_point(point).ok_or_else(|| lost(&format!("point {point} of the linked sketch {sketch}")))?;
+            vec![LinkGeom::Point(plane.to_local(from.to_world(sk.point(pi).unwrap_or_default())))]
         }
         LinkSource::OnSurface { sketch, curve, body, at } => {
             let ss = st.sketch(*sketch).ok_or_else(|| lost(&format!("sketch {sketch}")))?;
@@ -501,12 +495,61 @@ fn reversed(c: &WireCurve) -> Option<WireCurve> {
 
 /// Curve `ci` of the solved sketch `ss` as its exact pieces in space, in the order its polyline
 /// runs; none where a piece has no record curve.
-fn sketch_curves(ss: &crate::eval::SolvedSketch, ci: usize) -> Vec<WireCurve> {
-    let segs = ss.sketch.exact_segs(ci).unwrap_or_else(|| ss.sketch.segs(ci));
+fn sketch_curves(sk: &Sketch, from: &Plane, ci: usize) -> Vec<WireCurve> {
+    let segs = sk.exact_segs(ci).unwrap_or_else(|| sk.segs(ci));
     segs.iter()
-        .map(|s| crate::kernel::sketch_record_curve(&ss.plane, s).map(|(curve, interval)| WireCurve { curve, interval }))
+        .map(|s| crate::kernel::sketch_record_curve(from, s).map(|(curve, interval)| WireCurve { curve, interval }))
         .collect::<Option<_>>()
         .unwrap_or_default()
+}
+
+/// Curve `ci` of sketch `sk` on plane `from` as a link of `kind` on `plane`: projected into it
+/// (cut by it for an intersection; an include off the plane is a 3D wire of its exact curves).
+fn sketch_curve_geom(
+    sk: &Sketch,
+    from: &Plane,
+    ci: usize,
+    plane: &Plane,
+    kind: LinkKind,
+    wires: &mut Vec<Vec<Vec3>>,
+    exact: &mut Vec<Vec<WireCurve>>,
+) -> Vec<LinkGeom> {
+    match kind {
+        LinkKind::Intersect => {
+            let pts: Vec<Vec3> = sk.segs(ci).iter().flat_map(|s| s.polyline(1e-3)).map(|p| from.to_world(p)).collect();
+            section_of_polyline(plane, &pts)
+        }
+        LinkKind::Include => {
+            let pts: Vec<Vec3> = sk.polyline(ci).iter().map(|p| from.to_world(*p)).collect();
+            if off_plane(plane, &pts) {
+                wires.push(pts);
+                exact.push(sketch_curves(sk, from, ci));
+                Vec::new()
+            } else {
+                project_sketch_curve(sk, from, ci, plane)
+            }
+        }
+        _ => project_sketch_curve(sk, from, ci, plane),
+    }
+}
+
+/// Sketch `name` of the design linked into occurrence `occ`'s component, and its plane where the
+/// occurrence places it.
+fn linked_sketch<'a>(doc: &'a Document, occ: u64, name: &str) -> Result<(&'a Sketch, Plane)> {
+    let o = doc
+        .occurrences
+        .iter()
+        .find(|o| o.id == occ)
+        .ok_or_else(|| DocError::Invalid(format!("occurrence {occ} of the linked sketch {name} no longer exists")))?;
+    let link = doc.links.get(&o.component).ok_or_else(|| DocError::Invalid(format!("occurrence {occ} is no longer a linked design")))?;
+    let ls = link
+        .sketches
+        .iter()
+        .find(|l| l.name == name)
+        .ok_or_else(|| DocError::Invalid(format!("the linked design has no top-level sketch {name} any more")))?;
+    let m = crate::joints::occurrence_world(doc, occ);
+    let p = &ls.plane;
+    Ok((&ls.sketch, Plane { origin: crate::apply_point(&m, p.origin), x: crate::apply_vector(&m, p.x), y: crate::apply_vector(&m, p.y) }))
 }
 
 /// Edges `edges` of `body` (indices into its mesh's `edges`) on `plane` as their exact curves:
@@ -1127,6 +1170,9 @@ fn refresh_links_in(
                     }
                 }
             }
+            // A linked design's sketch that no longer gives the point or curve fails the sketch:
+            // the old place is not kept.
+            Err(e) if matches!(l.source, LinkSource::LinkedSketchCurve { .. } | LinkSource::LinkedSketchPoint { .. }) => return Err(e),
             Err(e) => {
                 sk.set_link_lost(&l.id, true);
                 warn.push(format!("projected reference lost: {e}"));

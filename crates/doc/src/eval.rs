@@ -1184,6 +1184,22 @@ fn fingerprint(doc: &Document, prev: u64, f: &Feature, vals: &BTreeMap<String, V
     rolled_back.hash(&mut h);
     vals.get(DESIGN_LEN).map(|v| v.v.to_bits()).hash(&mut h);
     hash_feature_json(f, steps, &mut h);
+    // A projection of a linked design's sketch reads that sketch as its link last read it.
+    if let FeatureKind::Sketch { sketch, .. } = &f.kind {
+        for l in &sketch.links {
+            if let solidcraft_sketch::LinkSource::LinkedSketchCurve { occurrence, sketch: name, .. }
+            | solidcraft_sketch::LinkSource::LinkedSketchPoint { occurrence, sketch: name, .. } = &l.source
+            {
+                let linked = doc
+                    .occurrences
+                    .iter()
+                    .find(|o| o.id == *occurrence)
+                    .and_then(|o| doc.links.get(&o.component))
+                    .and_then(|link| link.sketches.iter().find(|k| k.name == *name));
+                serde_json::to_string(&linked).unwrap_or_default().hash(&mut h);
+            }
+        }
+    }
     for n in param_names(f) {
         n.hash(&mut h);
         match (vals.get(&n), doc.text_param(&n)) {
@@ -1705,6 +1721,12 @@ impl PlacementReads {
                 self.body(doc, st, body)
             }
             L::SketchCurve { sketch, .. } | L::SketchPoint { sketch, .. } => self.sketch(doc, *sketch),
+            // A linked design's sketch, where its occurrence places the component.
+            L::LinkedSketchCurve { occurrence, .. } | L::LinkedSketchPoint { occurrence, .. } => {
+                if let Some(o) = doc.occurrences.iter().find(|o| o.id == *occurrence) {
+                    self.components.insert(o.component);
+                }
+            }
             L::OnSurface { sketch, body, .. } => {
                 self.sketch(doc, *sketch);
                 self.body(doc, st, body);

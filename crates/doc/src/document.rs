@@ -3127,6 +3127,19 @@ pub struct DesignLink {
     /// own frame: joints of this design name them by placement and name (`Snap::Linked`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub origins: Vec<LinkedOrigin>,
+    /// The linked design's top-level sketches, as it last read them, solved, on their planes in
+    /// the component's own frame: sketches of this design project their points and curves
+    /// through the occurrence's placement (`LinkSource::LinkedSketchPoint` and `…Curve`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sketches: Vec<LinkedSketch>,
+}
+
+/// A sketch of a linked design, where that design has it: its plane and its solved geometry.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LinkedSketch {
+    pub name: String,
+    pub plane: solidcore_record::Plane,
+    pub sketch: solidcraft_sketch::Sketch,
 }
 
 /// A joint origin of a linked design, where that design has it (its frame: origin, z and x).

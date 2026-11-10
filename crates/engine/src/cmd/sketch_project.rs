@@ -92,6 +92,9 @@ fn source(s: &Session, v: &Value, cmd: &str) -> Result<LinkSource> {
             Value::String(x) => x.clone(),
             _ => return Err(bad(cmd, "`sketch` must be an id or a name")),
         };
+        if v.get("occurrence").is_some() || s.doc.find_feature(&key).is_none() {
+            return linked_sketch_source(s, v, &key, cmd);
+        }
         let f = s.doc.find_feature(&key).ok_or_else(|| bad(cmd, format!("no sketch `{key}`")))?;
         if !matches!(f.kind, FeatureKind::Sketch { .. }) {
             return Err(bad(cmd, format!("`{key}` is not a sketch")));
@@ -120,6 +123,41 @@ fn source(s: &Session, v: &Value, cmd: &str) -> Result<LinkSource> {
         return Ok(LinkSource::Origin);
     }
     Err(bad(cmd, format!("cannot project {v}")))
+}
+
+/// A point or curve of sketch `name` of a linked design, on occurrence `occurrence` (an id or a
+/// name), or without one on the one linked occurrence whose design has a top-level sketch of
+/// that name. Only a linked design's top-level sketches are linked.
+fn linked_sketch_source(s: &Session, v: &Value, name: &str, cmd: &str) -> Result<LinkSource> {
+    let has = |o: &solidcraft_doc::Occurrence| s.doc.links.get(&o.component).is_some_and(|l| l.sketches.iter().any(|k| k.name == name));
+    let occurrence = match v.get("occurrence") {
+        Some(o) => {
+            let id = super::joints::occurrence_id(s, Some(o), cmd)?;
+            let occ = s.doc.occurrences.iter().find(|o| o.id == id).ok_or_else(|| bad(cmd, format!("no occurrence `{o}`")))?;
+            if !s.doc.links.contains_key(&occ.component) {
+                return Err(bad(cmd, format!("occurrence `{}` is not a linked design", occ.name)));
+            }
+            if !has(occ) {
+                return Err(bad(cmd, format!("the design linked into `{}` has no top-level sketch `{name}`", occ.name)));
+            }
+            id
+        }
+        None => match s.doc.occurrences.iter().filter(|o| has(o)).collect::<Vec<_>>().as_slice() {
+            [one] => one.id,
+            [] => return Err(bad(cmd, format!("no sketch `{name}` (in this design or at the top level of a linked one)"))),
+            many => {
+                let names: Vec<&str> = many.iter().map(|o| o.name.as_str()).collect();
+                return Err(bad(cmd, format!("linked occurrences {} each have a sketch `{name}`: give `occurrence`", names.join(", "))));
+            }
+        },
+    };
+    if let Some(c) = str_(v, "curve") {
+        return Ok(LinkSource::LinkedSketchCurve { occurrence, sketch: name.to_string(), curve: c.to_string() });
+    }
+    if let Some(p) = str_(v, "point") {
+        return Ok(LinkSource::LinkedSketchPoint { occurrence, sketch: name.to_string(), point: p.to_string() });
+    }
+    Err(bad(cmd, "a sketch reference needs `curve` or `point`"))
 }
 
 /// An origin axis (`X`, `Y` or `Z`, in any case), or a construction axis by its name (#9324).

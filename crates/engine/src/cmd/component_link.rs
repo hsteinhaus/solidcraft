@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde_json::{Value, json};
-use solidcraft_doc::{DesignLink, Document, FeatureKind, LinkedBodyProperties, LinkedOrigin, UserMaterial};
+use solidcraft_doc::{DesignLink, Document, FeatureKind, LinkedBodyProperties, LinkedOrigin, LinkedSketch, UserMaterial};
 
 use super::CommandSpec;
 use super::design_link::{absolute, resolve, stored};
@@ -141,8 +141,16 @@ pub fn resolve_design_links(doc: &mut Document, from: Option<&str>) {
 
 /// The bodies of a linked design: its name, the Import feature that holds them and the names
 /// the design gives their faces (`Feature::link_faces`), with the source's design properties.
-/// Last, the joint origins the design defines (`DesignLink::origins`).
-type Linked = (String, solidcraft_io::StepFeature, Vec<Vec<String>>, solidcraft_doc::Metadata, Vec<SourceProperties>, Vec<LinkedOrigin>);
+/// Last, the joint origins and top-level sketches the design defines.
+type Linked = (String, solidcraft_io::StepFeature, Vec<Vec<String>>, solidcraft_doc::Metadata, Vec<SourceProperties>, Carried);
+
+/// What a linked design defines beside its bodies, as the link keeps it: its joint origins
+/// (`DesignLink::origins`) and its top-level sketches (`DesignLink::sketches`).
+#[derive(Clone, Default)]
+struct Carried {
+    origins: Vec<LinkedOrigin>,
+    sketches: Vec<LinkedSketch>,
+}
 
 #[derive(Clone)]
 struct SourceProperties {
@@ -166,7 +174,7 @@ struct LinkRead {
     faces: u64,
     warnings: Vec<String>,
     properties: Vec<SourceProperties>,
-    origins: Vec<LinkedOrigin>,
+    carried: Carried,
 }
 
 #[cfg(test)]
@@ -183,13 +191,13 @@ fn digest<T: Hash + ?Sized>(value: &T) -> u64 {
 
 /// Warnings and source properties of the last read of `file`, when it had these bytes and gave the STEP text
 /// `step` and the face names `faces`: the bodies it gives are the ones the link holds.
-fn unchanged_read(file: &Path, bytes: u64, step: u64, faces: u64) -> Option<(Vec<String>, Vec<SourceProperties>, Vec<LinkedOrigin>)> {
+fn unchanged_read(file: &Path, bytes: u64, step: u64, faces: u64) -> Option<(Vec<String>, Vec<SourceProperties>, Carried)> {
     let file = absolute(file);
     let reads = READS.lock().ok()?;
     reads
         .iter()
         .find(|r| r.file == file && r.bytes == bytes && r.step == step && r.faces == faces)
-        .map(|r| (r.warnings.clone(), r.properties.clone(), r.origins.clone()))
+        .map(|r| (r.warnings.clone(), r.properties.clone(), r.carried.clone()))
 }
 
 fn remember_read(
@@ -198,7 +206,7 @@ fn remember_read(
     feature: &solidcraft_io::StepFeature,
     faces: &[Vec<String>],
     properties: &[SourceProperties],
-    origins: &[LinkedOrigin],
+    carried: &Carried,
 ) {
     let FeatureKind::Import { step, .. } = &feature.kind else { return };
     let file = absolute(file);
@@ -214,7 +222,7 @@ fn remember_read(
         faces: digest(faces),
         warnings: feature.warnings.clone(),
         properties: properties.to_vec(),
-        origins: origins.to_vec(),
+        carried: carried.clone(),
     });
 }
 
@@ -281,10 +289,10 @@ fn design_bodies(file: &Path, bytes: &[u8], validation: solidcraft_kernel::Valid
     } else {
         (solidcraft_io::read_design(bytes).map_err(fail)?, None)
     };
-    let (name, feature, faces, metadata, properties, origins) =
+    let (name, feature, faces, metadata, properties, carried) =
         session_bodies(&Session::opened_at_validating(doc, saved.as_ref(), Some(&shown), validation), &shown)?;
-    remember_read(file, digest(bytes), &feature, &faces, &properties, &origins);
-    Ok((name, feature, faces, metadata, properties, origins))
+    remember_read(file, digest(bytes), &feature, &faces, &properties, &carried);
+    Ok((name, feature, faces, metadata, properties, carried))
 }
 
 /// The solid bodies of `part`, the design saved as `shown`, as an Import feature.
@@ -354,8 +362,21 @@ fn session_bodies(part: &Session, shown: &str) -> Result<Linked> {
             Ok(SourceProperties { material, definition, appearance, faces })
         })
         .collect::<Result<Vec<_>>>()?;
-    let origins = design_origins(part, &mut feature.warnings);
-    Ok((name, feature, faces, part.doc.metadata.clone(), properties, origins))
+    let carried = Carried { origins: design_origins(part, &mut feature.warnings), sketches: design_sketches(part) };
+    Ok((name, feature, faces, part.doc.metadata.clone(), properties, carried))
+}
+
+/// The sketches at the top level of `part` (its root component's), solved, on their planes in
+/// its own frame.
+fn design_sketches(part: &Session) -> Vec<LinkedSketch> {
+    let st = part.model.state();
+    part.doc
+        .features
+        .iter()
+        .filter(|f| f.component == 0 && matches!(f.kind, FeatureKind::Sketch { .. }))
+        .filter_map(|f| st.sketch(f.id))
+        .map(|ss| LinkedSketch { name: ss.name.clone(), plane: ss.plane, sketch: ss.sketch.clone() })
+        .collect()
 }
 
 /// The joint origins `part` defines, where they are in its own frame (the frame its bodies come
@@ -401,13 +422,15 @@ fn frozen(snap: &mut solidcraft_doc::joints::Snap, origins: &[LinkedOrigin]) {
     }
 }
 
-/// The link of `comp` takes the joint origins its design has now; whether they changed.
-fn follow_origins(s: &mut Session, comp: u64, origins: Vec<LinkedOrigin>) -> bool {
-    if s.doc.links.get(&comp).is_none_or(|l| l.origins == origins) {
+/// The link of `comp` takes the joint origins and sketches its design has now; whether they
+/// changed.
+fn follow_carried(s: &mut Session, comp: u64, carried: Carried) -> bool {
+    if s.doc.links.get(&comp).is_none_or(|l| l.origins == carried.origins && l.sketches == carried.sketches) {
         return false;
     }
     if let Some(link) = s.doc_mut().links.get_mut(&comp) {
-        link.origins = origins;
+        link.origins = carried.origins;
+        link.sketches = carried.sketches;
     }
     true
 }
@@ -637,7 +660,7 @@ fn insert_design(s: &mut Session, p: &Value) -> Result<Value> {
             return reply(cmd, InsertDesignResult { inserted: DesignInserted::Reused { occurrence, component }, param_warnings: Vec::new() });
         }
     }
-    let ((design_name, sf, faces, metadata, properties, origins), read) = linked_bodies_read(&file, s.path.as_deref(), s.validation())?;
+    let ((design_name, sf, faces, metadata, properties, carried), read) = linked_bodies_read(&file, s.path.as_deref(), s.validation())?;
     let name = str_(p, "name").filter(|n| !n.trim().is_empty()).map(str::to_string).unwrap_or(design_name);
     let mut create = json!({"name": name, "activate": false});
     // Clipboard insertion uses reuse even for the first paste, which must stay movable.
@@ -664,9 +687,17 @@ fn insert_design(s: &mut Session, p: &Value) -> Result<Value> {
         o.transform[3] = [translate.x, translate.y, translate.z, 1.0];
     }
     let path = stored(s.path.as_deref(), &file);
-    s.doc_mut()
-        .links
-        .insert(comp, DesignLink { path: file.to_string_lossy().into_owned(), feature: id, inherited: Vec::new(), file_sha256: Some(read), origins });
+    s.doc_mut().links.insert(
+        comp,
+        DesignLink {
+            path: file.to_string_lossy().into_owned(),
+            feature: id,
+            inherited: Vec::new(),
+            file_sha256: Some(read),
+            origins: carried.origins,
+            sketches: carried.sketches,
+        },
+    );
     s.refresh();
     if let Some(e) = s.model.result(id).and_then(|r| r.error.clone()) {
         return Err(EngineError::Other(e));
@@ -743,11 +774,11 @@ fn update_links(s: &mut Session, p: &Value) -> Result<Value> {
             .feature(link.feature)
             .filter(|_| !link.inherited.is_empty() && link.inherited.iter().all(|p| p.faces.is_some()))
             .map(|f| digest(f.link_faces.as_slice()));
-        if let Some((known, properties, origins)) =
+        if let Some((known, properties, carried)) =
             kept_faces.and_then(|faces| unchanged_read(&file, digest(bytes.as_slice()), digest(old.as_bytes()), faces))
         {
             warnings.extend(known);
-            let moved = follow_origins(s, comp, origins);
+            let moved = follow_carried(s, comp, carried);
             // Another component or session may have evaluated this source first. Its
             // cached geometry says nothing about this link's inherited properties.
             if inherit_properties(s, comp, &properties)? || moved {
@@ -757,7 +788,7 @@ fn update_links(s: &mut Session, p: &Value) -> Result<Value> {
             }
             continue;
         }
-        let (_, sf, faces, _, properties, origins) = match design_bodies(&file, &bytes, s.validation()) {
+        let (_, sf, faces, _, properties, carried) = match design_bodies(&file, &bytes, s.validation()) {
             Ok(read) => read,
             Err(e) if go_on => {
                 // It keeps its bodies, so it has not taken this file in yet.
@@ -771,7 +802,7 @@ fn update_links(s: &mut Session, p: &Value) -> Result<Value> {
             Err(e) => return Err(bad(cmd, format!("{cname}: {e}"))),
         };
         warnings.extend(sf.warnings.iter().cloned());
-        let moved = follow_origins(s, comp, origins);
+        let moved = follow_carried(s, comp, carried);
         let same = matches!(&sf.kind, FeatureKind::Import { step, .. } if *step == old);
         let kept = s.doc.feature(link.feature).map(|f| &f.link_faces);
         if same && kept == Some(&faces) {
@@ -874,7 +905,7 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // Read/evaluate the candidate before changing anything. Session::execute owns the single
     // undo step and restores both the document and evaluated state on any later failure.
-    let ((_, sf, faces, _, properties, origins), read) =
+    let ((_, sf, faces, _, properties, carried), read) =
         linked_bodies_read(&file, s.path.as_deref(), s.validation()).map_err(|e| bad(cmd, e.to_string()))?;
     let geometry_changed = match (s.doc.feature(link.feature).map(|f| &f.kind), &sf.kind) {
         (Some(FeatureKind::Import { step: old, .. }), FeatureKind::Import { step, .. }) => old != step,
@@ -898,7 +929,16 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
         f.kind = sf.kind;
         f.link_faces = faces;
     }
-    s.doc_mut().links.insert(comp, DesignLink { path: file.to_string_lossy().into_owned(), file_sha256: Some(read), origins, ..link.clone() });
+    s.doc_mut().links.insert(
+        comp,
+        DesignLink {
+            path: file.to_string_lossy().into_owned(),
+            file_sha256: Some(read),
+            origins: carried.origins,
+            sketches: carried.sketches,
+            ..link.clone()
+        },
+    );
     s.refresh();
     if let Some(error) = s.model.result(link.feature).and_then(|r| r.error.clone()) {
         return Err(bad(cmd, error));
