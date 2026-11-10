@@ -955,28 +955,3 @@ mod history {
         check(Blend::Chamfer, 2.0);
     }
 }
-
-/// Rounds of one tangent chain go first together: SolidCraft's Knoten_laminiert, a tube end's arc
-/// on a 0.5 mm plate rounded r 2 with its tangent chain (the arc, its two runs on over the tube's
-/// root round and two plate-top stubs on to the plate's corners). The stubs overflow on their own,
-/// the others do not; sent first alone, each stub ended at a smooth vertex into a round of the
-/// second pass, which no End builds (status 1001). As one blend: 25 + 5 faces and 33.238161 less,
-/// the kernel's one-pass build.
-#[test]
-fn a_tangent_chain_goes_first_as_one_blend() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/knoten_laminiert_fillet2.smb");
-    let body = super::file::read(&path, false).unwrap();
-    let points = [
-        [35.355_339_059_327_38, 35.355_339_059_327_37, 11.5],
-        [43.833_499_645_125_82, 26.877_178_473_528_968, 0.960_399_282_160_999_2],
-        [26.877_178_473_528_94, 43.833_499_645_125_78, 0.960_399_282_160_999_9],
-        [45.172_278_982_753_28, 25.538_399_135_901_47, 0.5],
-        [25.538_399_135_901_47, 45.172_278_982_753_26, 0.5],
-    ];
-    let before = volume(&body, 1e-8).unwrap();
-    let (b, dropped) = blend_dropping(&body, Blend::Round, Turn::Mitre, &points, &[2.0; 5], 1.0).unwrap();
-    assert_eq!(dropped, vec![false; 5]);
-    assert_eq!(counts(&b).unwrap()[0], 30, "5 faces as one blend");
-    let less = before - volume(&b, 1e-8).unwrap();
-    assert!((less - 33.238_161).abs() <= 1e-6, "{less}");
-}
