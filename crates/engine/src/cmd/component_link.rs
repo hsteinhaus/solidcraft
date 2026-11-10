@@ -1012,6 +1012,61 @@ mod tests {
         run(&mut part, "file.save", json!({"path": path}));
     }
 
+    /// Fusion's Project of a linked component's sketch geometry (Pixracer_Basis Sketch2 p23 is
+    /// Knotenplatte's Sketch1 p8): a point and a line of the linked design's sketch project into
+    /// this design's sketch through the occurrence's placement, and follow the occurrence and the
+    /// design.
+    #[test]
+    fn a_linked_designs_sketch_point_and_line_project_and_follow() {
+        let dir = std::env::temp_dir().join(format!("solidcraft-linked-sketch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let part = dir.join("plate.solidcraft");
+        // The design with Sketch1: a point at (x, 28) and a line from (x, 0) to (x, 10); their ids.
+        let save = |x: f64| -> (String, String) {
+            let mut p = Session::default();
+            run(&mut p, "sketch.create", json!({"plane": "XY", "name": "Sketch1"}));
+            run(&mut p, "sketch.point", json!({"point": [x, 28]}));
+            run(&mut p, "sketch.line", json!({"points": [[x, 0], [x, 10]]}));
+            let si = run(&mut p, "sketch.inspect", json!({}));
+            let point = si["points"].as_array().unwrap().iter().find(|q| (q["at"][1].as_f64().unwrap() - 28.0).abs() < 1e-9).unwrap()["id"].clone();
+            let line = si["curves"][0]["id"].clone();
+            run(&mut p, "sketch.finish", json!({}));
+            run(&mut p, "solid.box", json!({"length": 10, "width": 10, "height": 2, "body_name": "Plate"}));
+            run(&mut p, "file.save", json!({"path": part}));
+            (point.as_str().unwrap().to_string(), line.as_str().unwrap().to_string())
+        };
+        let (point, line) = save(-28.0);
+        let mut s = Session::default();
+        let occ = run(&mut s, "component.insert_design", json!({"path": part, "name": "Knotenplatte"}))["occurrence"].as_u64().unwrap();
+        let t = run(&mut s, "sketch.create", json!({"plane": "XY", "name": "T"}))["sketch"].as_u64().unwrap();
+        run(&mut s, "sketch.project", json!({"refs": [{"sketch": "Sketch1", "point": point}, {"sketch": "Sketch1", "curve": line}]}));
+        run(&mut s, "sketch.finish", json!({}));
+        let has = |s: &Session, x: f64, y: f64| {
+            let st = s.model.state();
+            st.sketch(t).unwrap().sketch.points.iter().any(|q| (q.pos.x - x).hypot(q.pos.y - y) < 1e-9)
+        };
+        for (x, y) in [(-28.0, 28.0), (-28.0, 0.0), (-28.0, 10.0)] {
+            assert!(has(&s, x, y), "({x}, {y})");
+        }
+        run(&mut s, "occurrence.ground", json!({"occurrence": occ, "grounded": false}));
+        run(&mut s, "occurrence.move", json!({"occurrence": occ, "translate": [5, 0, 0], "capture": true}));
+        for (x, y) in [(-23.0, 28.0), (-23.0, 0.0), (-23.0, 10.0)] {
+            assert!(has(&s, x, y), "moved: ({x}, {y})");
+        }
+        save(-30.0);
+        run(&mut s, "component.update_links", json!({}));
+        for (x, y) in [(-25.0, 28.0), (-25.0, 0.0), (-25.0, 10.0)] {
+            assert!(has(&s, x, y), "updated: ({x}, {y})");
+        }
+        // The design without that sketch: the projection fails the sketch, no old place is kept.
+        let mut p = Session::default();
+        run(&mut p, "solid.box", json!({"length": 10, "width": 10, "height": 2, "body_name": "Plate"}));
+        run(&mut p, "file.save", json!({"path": part}));
+        let _ = s.execute("component.update_links", &json!({}));
+        assert!(s.model.result(t).and_then(|r| r.error.clone()).is_some(), "the sketch fails without its linked sketch");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn volume(s: &mut Session) -> f64 {
         run(s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64().unwrap_or(f64::NAN)
     }
