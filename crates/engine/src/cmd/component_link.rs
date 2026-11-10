@@ -1107,6 +1107,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A design of sketches only links (Kreuz inserts layout_quad, a layout sketch, as Fusion
+    /// links it): its sketch projects and follows Update Links as a linked part's does.
+    #[test]
+    fn a_design_of_sketches_only_links_and_its_sketch_projects() {
+        let dir = std::env::temp_dir().join(format!("solidcraft-sketch-only-link-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let layout = dir.join("layout.solidcraft");
+        let save = |x: f64| -> String {
+            let mut p = Session::default();
+            run(&mut p, "sketch.create", json!({"plane": "XY", "name": "Layout"}));
+            run(&mut p, "sketch.point", json!({"point": [x, 28]}));
+            let si = run(&mut p, "sketch.inspect", json!({}));
+            let point = si["points"].as_array().unwrap().iter().find(|q| (q["at"][1].as_f64().unwrap() - 28.0).abs() < 1e-9).unwrap()["id"].clone();
+            run(&mut p, "sketch.finish", json!({}));
+            run(&mut p, "file.save", json!({"path": layout}));
+            point.as_str().unwrap().to_string()
+        };
+        let point = save(-28.0);
+        let mut s = Session::default();
+        run(&mut s, "component.insert_design", json!({"path": layout, "name": "layout_quad"}));
+        let t = run(&mut s, "sketch.create", json!({"plane": "XY", "name": "T"}))["sketch"].as_u64().unwrap();
+        run(&mut s, "sketch.project", json!({"refs": [{"sketch": "Layout", "point": point}]}));
+        run(&mut s, "sketch.finish", json!({}));
+        let has = |s: &Session, x: f64| {
+            let st = s.model.state();
+            st.sketch(t).unwrap().sketch.points.iter().any(|q| (q.pos.x - x).hypot(q.pos.y - 28.0) < 1e-9)
+        };
+        assert!(has(&s, -28.0));
+        save(-30.0);
+        run(&mut s, "component.update_links", json!({}));
+        assert!(has(&s, -30.0), "updated");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn volume(s: &mut Session) -> f64 {
         run(s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64().unwrap_or(f64::NAN)
     }
