@@ -89,6 +89,8 @@ pub(crate) use measure_sel::{measure_items, shape_of};
 pub(crate) use measure_shape::Shape;
 #[cfg(test)]
 mod kernel_heal_tests;
+#[cfg(test)]
+mod model_edges_tests;
 mod panels;
 mod parameter_sweep;
 mod parameters;
