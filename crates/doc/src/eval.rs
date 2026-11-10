@@ -8473,6 +8473,8 @@ fn eval_feature(
             }
             Ok(())
         }
+        // A linked design of sketches only holds no bodies, and no STEP text.
+        FeatureKind::Import { step, .. } if step.is_empty() => Ok(()),
         FeatureKind::Import { step, skip, .. } => {
             let imp = kernel::step_import_shared(step)?;
             let digest = crate::config::payload_digest(step);

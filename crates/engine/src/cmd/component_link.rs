@@ -303,8 +303,28 @@ fn session_bodies(part: &Session, shown: &str) -> Result<Linked> {
     }
     let world = part.world_state()?;
     let solids: Vec<String> = world.bodies.iter().filter(|b| !b.body.is_mesh()).map(|b| b.name.clone()).collect();
+    // A design of sketches only (a layout) links its sketches.
+    let sketches = design_sketches(part);
+    if solids.is_empty() && sketches.is_empty() {
+        return Err(EngineError::Other(format!("{shown}: the design has no solid bodies or top-level sketches to link")));
+    }
     if solids.is_empty() {
-        return Err(EngineError::Other(format!("{shown}: the design has no solid bodies to link")));
+        // A layout of sketches only: an Import feature without bodies (no STEP text) holds the
+        // link, and the link its sketches.
+        let import = std::sync::Arc::new(solidcraft_kernel::StepImport {
+            bodies: Vec::new(),
+            tree: Vec::new(),
+            warnings: Vec::new(),
+            report: Default::default(),
+            schema: String::new(),
+            system: String::new(),
+            preprocessor: String::new(),
+            description: String::new(),
+        });
+        let kind = FeatureKind::Import { file: shown.to_string(), step: std::sync::Arc::from(""), components: Vec::new(), skip: Vec::new() };
+        let mut feature = solidcraft_io::StepFeature { name: name.clone(), kind, body_names: Vec::new(), warnings: Vec::new(), import };
+        let carried = Carried { origins: design_origins(part, &mut feature.warnings), sketches };
+        return Ok((name, feature, Vec::new(), part.doc.metadata.clone(), Vec::new(), carried));
     }
     let step = solidcraft_io::export(&part.doc.painted_for_link(&world), &solids, solidcraft_io::Format::Step, &name)
         .map_err(|e| EngineError::Other(format!("{shown}: {e}")))?;
@@ -362,7 +382,7 @@ fn session_bodies(part: &Session, shown: &str) -> Result<Linked> {
             Ok(SourceProperties { material, definition, appearance, faces })
         })
         .collect::<Result<Vec<_>>>()?;
-    let carried = Carried { origins: design_origins(part, &mut feature.warnings), sketches: design_sketches(part) };
+    let carried = Carried { origins: design_origins(part, &mut feature.warnings), sketches };
     Ok((name, feature, faces, part.doc.metadata.clone(), properties, carried))
 }
 
