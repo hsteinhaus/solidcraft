@@ -449,6 +449,13 @@ fn body_of<'a>(st: &'a solidcraft_doc::ModelState, p: &Value, cmd: &str) -> Resu
     st.body(n).ok_or_else(|| bad(cmd, format!("no body `{n}`")))
 }
 
+/// The middle of edge `e` on the edge's own curve (halfway along its parameter; a closed edge's
+/// opposite its start); the middle of its polyline where the body holds no curve for it.
+fn exact_mid(body: &solidcraft_kernel::Body, e: &solidcraft_kernel::EdgeInfo) -> solidcore_record::Vec3 {
+    let closed = e.points.first().zip(e.points.last()).is_some_and(|(a, b)| a.dist(*b) < 1e-9);
+    solidcraft_kernel::edge_comb(body, e.index, if closed { 2 } else { 3 }).ok().and_then(|teeth| teeth.get(1).map(|t| t.at)).unwrap_or(e.mid)
+}
+
 fn model_edges(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.world_state()?;
     let b = body_of(&st, p, "model.edges")?;
@@ -461,7 +468,7 @@ fn model_edges(s: &mut Session, p: &Value) -> Result<Value> {
         .map(|e| ModelEdge {
             index: e.index,
             name: names.get(e.index).cloned(),
-            mid: e.mid.into(),
+            mid: exact_mid(&b.body, e).into(),
             length: e.length,
             start: e.points.first().map(|&p| p.into()),
             end: e.points.last().map(|&p| p.into()),

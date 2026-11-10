@@ -70,7 +70,7 @@ pub struct ModelEdge {
     /// Its name, `<face A>|<face B>` from the faces it joins (numbered when repeated); `null`
     /// when it has none.
     pub name: Option<String>,
-    /// The point halfway along it, which picks it.
+    /// The point on its curve halfway along its parameter, which picks it.
     pub mid: [f64; 3],
     /// Its length (mm).
     pub length: f64,
