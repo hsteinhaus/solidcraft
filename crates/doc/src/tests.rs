@@ -1202,3 +1202,51 @@ fn an_extruded_ellipse_or_spline_is_one_wall_named_by_its_curve() {
         assert_eq!(names(&Document::from_json(&doc.to_json()).unwrap()), first, "reopened");
     }
 }
+
+/// An ellipse crossed by a line, both regions extruded: the wall is still the one ellipse, one
+/// face named by its curve, not a face for each piece the crossing cut it into.
+#[test]
+fn an_extruded_ellipse_cut_by_a_line_is_one_wall() {
+    let mut sk = Sketch::new();
+    let m = sk.add_point(Vec2::new(25., 0.), None).unwrap();
+    let curve = sk.add_curve(solidcraft_sketch::CurveKind::Ellipse { c: 0, m, r: 14. }, None).unwrap();
+    sk.add_line(Vec2::new(-40., 11.), Vec2::new(40., 11.), None, None, None).unwrap();
+    let id = sk.curves[curve].id.clone();
+    let mut doc = Document::new("one wall, cut");
+    let s = doc.add_feature(FeatureKind::Sketch { plane: PlaneRef::Origin { name: "XY".into() }, sketch: sk }, None).unwrap();
+    let f = doc
+        .add_feature(
+            FeatureKind::Extrude {
+                thin: None,
+                sketch: crate::SketchId(s),
+                profiles: ProfileSel::All,
+                extent: Extent {
+                    convention: crate::ExtrudeConvention::LegacyPerSide,
+                    distance: "20".into(),
+                    direction: Direction::Positive,
+                    distance2: None,
+                    start_offset: None,
+                    through_all: false,
+                    second_follows_first: false,
+                    taper: None,
+                    corner: Default::default(),
+                    to: None,
+                    to_offset: None,
+                    from: None,
+                    to_body_apart: false,
+                },
+                operation: Operation::NewBody,
+                targets: vec![],
+            },
+            None,
+        )
+        .unwrap();
+    let mut m = Model::new();
+    m.evaluate(&doc);
+    assert!(m.results.iter().all(|r| r.error.is_none()), "{:?}", m.results);
+    let st = m.state();
+    assert_eq!(st.bodies.len(), 1);
+    let names = crate::naming::face_names(&st.bodies[0]).as_ref().clone();
+    assert_eq!(names.len(), 3, "{names:?}");
+    assert_eq!(names.iter().filter(|n| **n == format!("F{f}:side:{id}")).count(), 1, "{names:?}");
+}
