@@ -11,7 +11,7 @@ use solidcore_record::{Loop2, Plane, Vec2, Vec3};
 use solidcraft_geom::{Mesh, Ring};
 use solidcraft_kernel::CylinderFace;
 
-use super::{Snap, XRef, component_bodies, origin_bodies};
+use super::{Snap, XRef, origin_bodies};
 use crate::history_names::Match;
 use crate::{DocError, Document, IDENTITY, Mat, ModelBody, ModelState, Result, apply_point, apply_vector, mat_inverse};
 
@@ -316,8 +316,13 @@ pub(super) fn x_axis(doc: &Document, st: &ModelState, component: u64, x: Option<
 /// as near the facets of the plate's face round the rim). `round` prefers a cylinder on a tie
 /// (a pick on a hole's rim names its wall). `None`: no named face there.
 pub fn face_name_at(doc: &Document, st: &ModelState, component: u64, pick: Vec3, round: bool) -> Option<String> {
+    face_name_on(doc, st, component, None, pick, round)
+}
+
+/// [`face_name_at`] on body `body` of the component only, when given.
+pub fn face_name_on(doc: &Document, st: &ModelState, component: u64, body: Option<&str>, pick: Vec3, round: bool) -> Option<String> {
     let mut best: Option<(f64, &ModelBody, usize)> = None;
-    for b in component_bodies(doc, st, component) {
+    for b in origin_bodies(doc, st, component, body) {
         if b.body.is_mesh() {
             continue;
         }
@@ -354,11 +359,12 @@ pub fn face_name_at(doc: &Document, st: &ModelState, component: u64, pick: Vec3,
 }
 
 /// A circle-centre snap for the round end of a component's cylindrical face centred at
-/// `centre` (the component's coordinates; a circle given by its centre, where no face lies),
-/// with the face's name and its end's: `None` when no named cylinder ends there.
-pub fn round_end_at(doc: &Document, st: &ModelState, component: u64, centre: Vec3) -> Option<Snap> {
+/// `centre` (the component's coordinates; a circle given by its centre, where no face lies), on
+/// `body` when given, with the face's name and its end's, and the body it is on: `None` when no
+/// named cylinder ends there.
+pub fn round_end_at(doc: &Document, st: &ModelState, component: u64, body: Option<&str>, centre: Vec3) -> Option<(Snap, String)> {
     let mut best: Option<(f64, &ModelBody, usize, CylinderFace, f64)> = None;
-    for b in component_bodies(doc, st, component) {
+    for b in origin_bodies(doc, st, component, body) {
         if b.body.is_mesh() {
             continue;
         }
@@ -382,7 +388,7 @@ pub fn round_end_at(doc: &Document, st: &ModelState, component: u64, centre: Vec
     let names = crate::naming::face_names(b);
     let face = names.get(f).filter(|n| !n.is_empty()).cloned()?;
     let end = rim_neighbour(b, f, &c, at).and_then(|n| names.get(n)).filter(|n| !n.is_empty()).cloned();
-    Some(Snap::CircleCenter { pick: centre, face: Some(face), end, x: None })
+    Some((Snap::CircleCenter { pick: centre, face: Some(face), end, x: None }, b.name.clone()))
 }
 
 /// Name the end a named circle-centre snap of `component` takes now (the face across the rim
@@ -411,12 +417,12 @@ pub fn end_faces(doc: &Document, st: &ModelState, component: u64, snap: &Snap) -
 }
 
 /// The face `model.faces` calls `name` (on the body called `body`, or any body): the component
-/// it belongs to and a point on it in that component's coordinates, for a joint origin given by
-/// a face's name. `Err` says why there is no one such face.
-pub fn named_face_spot(doc: &Document, st: &ModelState, body: Option<&str>, name: &str) -> std::result::Result<(u64, Vec3), String> {
+/// it belongs to, a point on it in that component's coordinates and its body, for a joint origin
+/// given by a face's name. `Err` says why there is no one such face.
+pub fn named_face_spot(doc: &Document, st: &ModelState, body: Option<&str>, name: &str) -> std::result::Result<(u64, Vec3, String), String> {
     let hit = crate::name_lookup::locate_one(st, body, name)?;
     let b = st.bodies.get(hit.body).ok_or_else(|| format!("no face is named `{name}`"))?;
     let spot = crate::naming::face_spot(b, hit.face).ok_or_else(|| format!("face `{name}` has no surface to pick"))?;
     let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
-    Ok((doc.model_body_component(b), apply_point(&offset, spot.point)))
+    Ok((doc.model_body_component(b), apply_point(&offset, spot.point), b.name.clone()))
 }
