@@ -572,6 +572,12 @@ fn show_mm(v: f64) -> String {
 }
 
 impl ModelState {
+    /// The pieces each target of Split Body by a body `feature` was split into: (target, piece
+    /// names, the target's own first).
+    pub fn split_pieces(&self, feature: u64) -> Option<&[(String, Vec<String>)]> {
+        self.split_pieces.get(&feature).map(Vec::as_slice)
+    }
+
     /// The smallest radius fillet `feature` used when it reduced a radius too large for its edges.
     pub fn fitted_radius(&self, feature: u64) -> Option<f64> {
         self.fitted_range(feature).map(|(lo, _)| lo)
@@ -644,6 +650,8 @@ pub struct ModelState {
     /// picks its pieces were named by (by feature id, see [`crate::lineage::order_legacy_lumps`]):
     /// the state stands for the feature only while those picks are the same.
     legacy_picks: BTreeMap<u64, u64>,
+    /// The pieces each target of a Split Body by a body was split into, in order (by feature id).
+    split_pieces: BTreeMap<u64, Vec<(String, Vec<String>)>>,
 }
 
 /// How a piece a join split off into a body of its own (`Touching::Separate`) touched the
@@ -1870,6 +1878,17 @@ fn placement_digest(doc: &Document, f: &Feature, st: Option<&ModelState>) -> u64
         // A mirror of placed bodies follows the placements it was picked at and its own component's
         // frame, not every occurrence: moving an unrelated one leaves it (and its cache) alone.
         FeatureKind::Mirror { placements, bodies, .. } if !placements.is_empty() => return mirror_placements_digest(doc, f, placements, bodies),
+        // A split by a body meets the tool where it is placed against each target.
+        FeatureKind::Split { body, bodies, solid: Some(tool), occurrence, .. } => {
+            frame = st.and_then(|st| st.body(body)).map(|b| body_world(doc, b));
+            for b in std::iter::once(body).chain(bodies) {
+                reads.placed_body(st, b);
+            }
+            reads.placed_body(st, tool);
+            if let Some(o) = occurrence {
+                reads.paths.push(vec![*o]);
+            }
+        }
         // A combine moves tools placed differently from its target into the target's frame (#3383).
         FeatureKind::Combine { target, tools, .. } => {
             frame = st.and_then(|st| st.body(target)).map(|b| body_world(doc, b));
@@ -7906,7 +7925,80 @@ fn eval_feature(
             }
             Ok(())
         }
-        FeatureKind::Split { body, plane, tool, sketch, line } => {
+        FeatureKind::Split { body, bodies, solid: Some(tool), occurrence, .. } => {
+            let tb = st.body(tool).cloned().ok_or_else(|| DocError::Unknown(format!("body `{tool}`")))?;
+            if tb.body.is_mesh() {
+                return Err(DocError::Invalid(format!("`{tool}` is a mesh: a mesh body can't split bodies")));
+            }
+            // Where the tool is shown: through the placement it was picked in, else its component's.
+            let tool_world = match occurrence {
+                Some(o) => {
+                    let m = crate::joints::occurrence_world(doc, *o);
+                    doc.model_body_offset(&tb).map_or(m, |offset| crate::mat_mul(&m, offset))
+                }
+                None => body_world(doc, &tb),
+            };
+            let tool_traced = tb.traced();
+            let mut made = Vec::new();
+            let mut named = 0;
+            for target in std::iter::once(body).chain(bodies) {
+                if target == tool {
+                    return Err(DocError::Invalid(format!("`{target}` is the tool: a body can't split itself")));
+                }
+                let i = st.bodies.iter().position(|b| &b.name == target).ok_or_else(|| DocError::Unknown(format!("body `{target}`")))?;
+                let Some(mb) = st.bodies.get(i).cloned() else { return Err(DocError::Unknown(format!("body `{target}`"))) };
+                // The tool moved into the target's frame, where it is shown against it.
+                let into = crate::mat_inverse(&body_world(doc, &mb))
+                    .ok_or_else(|| DocError::Invalid(format!("`{target}` is placed where it cannot be split")))?;
+                let rel = crate::mat_mul(&into, &tool_world);
+                let tool_here = if rel == crate::IDENTITY {
+                    tool_traced.clone()
+                } else {
+                    Traced::step(kernel::transform_matrix(&tb.body, rel)?, &[&tool_traced])
+                };
+                let input = mb.traced();
+                // Outside the tool, then inside it; the pieces of each by their centroids (x, then y,
+                // then z, to 1 µm), so the order holds however the kernel lists them.
+                let mut parts = Vec::new();
+                for op in [kernel::BoolOp::Cut, kernel::BoolOp::Intersect] {
+                    let Some(r) = kernel::boolean(&input.body, &tool_here.body, op)? else { continue };
+                    let r = Traced::step(r, &[&input, &tool_here]);
+                    let mut lumps = Vec::new();
+                    for l in r.body.lumps()? {
+                        let c = kernel::measure(&l)?.centroid;
+                        let key = [c.x, c.y, c.z].map(|v| (v * 1e3).round() as i64);
+                        lumps.push((key, Traced::step(l, &[&r])));
+                    }
+                    lumps.sort_by_key(|(key, _)| *key);
+                    parts.extend(lumps.into_iter().map(|(_, t)| t));
+                }
+                if parts.len() < 2 {
+                    return Err(DocError::Invalid(format!("`{tool}` does not split `{target}`")));
+                }
+                let mut it = parts.into_iter();
+                if let (Some(first), Some(slot)) = (it.next(), st.bodies.get_mut(i)) {
+                    *slot = ModelBody::traced_new(mb.name.clone(), first, mb.feature);
+                }
+                let mut names = vec![mb.name.clone()];
+                for (k, b) in it.enumerate() {
+                    // `body_names` in the order targets × pieces after each target's first.
+                    let mut name = match f.body_names.get(named).filter(|n| !n.trim().is_empty() && st.body(n).is_none()) {
+                        Some(n) => n.clone(),
+                        None => format!("{} ({})", mb.name, k + 1),
+                    };
+                    named += 1;
+                    while st.body(&name).is_some() {
+                        name.push('\'');
+                    }
+                    names.push(name.clone());
+                    st.bodies.push(ModelBody::traced_new(name, b, f.id));
+                }
+                made.push((mb.name.clone(), names));
+            }
+            st.split_pieces.insert(f.id, made);
+            Ok(())
+        }
+        FeatureKind::Split { body, plane, tool, sketch, line, .. } => {
             let i = st.bodies.iter().position(|b| &b.name == body).ok_or_else(|| DocError::Unknown(format!("body `{body}`")))?;
             let Some(mb) = st.bodies.get(i).cloned() else { return Err(DocError::Unknown(format!("body `{body}`"))) };
             let input = mb.traced();

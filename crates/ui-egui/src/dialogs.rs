@@ -7494,7 +7494,9 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Split { body, plane, tool, sketch, line } => {
+        // Split by a whole body has no dialog of its own yet (the plane dialog would lose its tool).
+        FeatureKind::Split { solid: Some(_), .. } => return None,
+        FeatureKind::Split { body, plane, tool, sketch, line, .. } => {
             let mut d = start("solid.split_body")?;
             if let Some(inp) = d.inputs.first_mut() {
                 inp.items = vec![Sel::Body { name: body.to_string() }];

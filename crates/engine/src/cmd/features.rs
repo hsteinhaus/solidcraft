@@ -165,7 +165,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("solid.split_body", "Split Body", split_body)
         .at("SOLID", "MODIFY")
         .icon("split_body")
-        .params("body: name; plane: XY|XZ|YZ|plane name|{origin, normal} — or tool: {body, point} (a face of a body, its surface extended) — or sketch: id, line: curve id (a straight sketch line, along the sketch's normal)"),
+        .params("body: name (or bodies: [names], split by a whole body); plane: XY|XZ|YZ|plane name|{origin, normal} — or tool: {body, point} (a face of a body, its surface extended) — or tool: {body, occurrence?} (a whole solid body, not extended, as Fusion's Split Body by a body: `body` its own name as model.bodies lists it, `occurrence` the placement it is shown in, id or name such as `Part:1`, needed when its component is placed more than once; each target splits into its pieces outside the tool, then inside it, each group by centroid x, then y, then z; the first keeps the target's name, the others `<target> (k)` or `body_names` in the order targets × pieces; the tool stays; the result lists `pieces` per target: name, volume, faces) — or sketch: id, line: curve id (a straight sketch line, along the sketch's normal)"),
     CommandSpec::new("solid.press_pull", "Press Pull", press_pull)
         .at("SOLID", "MODIFY")
         .icon("presspull")
@@ -2606,6 +2606,10 @@ fn split_face(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn split_body(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "solid.split_body";
+    let whole = p.get("tool").is_some_and(|t| t.is_object() && t.get("point").is_none_or(Value::is_null));
+    if whole || p.get("bodies").is_some_and(|b| !b.is_null()) {
+        return split_by_body(s, p, cmd);
+    }
     let body = str_(p, "body").ok_or_else(|| bad(cmd, "`body` is required"))?.to_string();
     if s.model.state().body(&body).is_none() {
         return Err(bad(cmd, format!("no body `{body}`")));
@@ -2628,6 +2632,9 @@ fn split_body(s: &mut Session, p: &Value) -> Result<Value> {
                 tool: None,
                 sketch: Some(solidcraft_doc::SketchId(sketch)),
                 line: Some(line),
+                bodies: Vec::new(),
+                solid: None,
+                occurrence: None,
             },
         );
     }
@@ -2649,11 +2656,101 @@ fn split_body(s: &mut Session, p: &Value) -> Result<Value> {
                 tool: Some(solidcraft_doc::FaceAt { body: BodyName(tb), point: Position(point) }),
                 sketch: None,
                 line: None,
+                bodies: Vec::new(),
+                solid: None,
+                occurrence: None,
             },
         );
     }
     let plane = plane_param(s, p.get("plane"), cmd)?;
-    add_feature(s, p, FeatureKind::Split { body: BodyName(body), plane, tool: None, sketch: None, line: None })
+    add_feature(
+        s,
+        p,
+        FeatureKind::Split { body: BodyName(body), plane, tool: None, sketch: None, line: None, bodies: Vec::new(), solid: None, occurrence: None },
+    )
+}
+
+/// `solid.split_body` by a whole solid body (`tool: {body, occurrence?}`, no `point`): `body` or
+/// each of `bodies` into its pieces outside the tool and inside it, the result listing them.
+fn split_by_body(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
+    let targets: Vec<String> = match (str_(p, "body"), p.get("bodies").filter(|b| !b.is_null())) {
+        (Some(b), None) => vec![b.to_string()],
+        (None, Some(Value::Array(list))) if !list.is_empty() => {
+            list.iter().map(|v| v.as_str().map(str::to_string).ok_or_else(|| bad(cmd, "`bodies` is a list of body names"))).collect::<Result<_>>()?
+        }
+        _ => return Err(bad(cmd, "give `body` or `bodies` (a list of body names), not both")),
+    };
+    let t =
+        p.get("tool").filter(|t| !t.is_null()).ok_or_else(|| bad(cmd, "several bodies are split by a whole body: `tool: {body, occurrence?}`"))?;
+    if t.get("point").is_some_and(|v| !v.is_null()) {
+        return Err(bad(cmd, "several bodies are split by a whole body (`tool: {body}`), not by one of its faces"));
+    }
+    let tool = t.get("body").and_then(Value::as_str).ok_or_else(|| bad(cmd, "`tool.body` must name a body"))?.to_string();
+    let st = s.model.state();
+    let tb = st.body(&tool).ok_or_else(|| bad(cmd, format!("no body `{tool}` (the tool's own name, as model.bodies lists it)")))?;
+    if tb.body.is_mesh() {
+        return Err(bad(cmd, format!("`{tool}` is a mesh: a mesh body can't split bodies")));
+    }
+    for (k, n) in targets.iter().enumerate() {
+        if *n == tool {
+            return Err(bad(cmd, format!("`{n}` is the tool: a body can't split itself")));
+        }
+        if st.body(n).is_none() {
+            return Err(bad(cmd, format!("no body `{n}`")));
+        }
+        if targets[..k].contains(n) {
+            return Err(bad(cmd, format!("`{n}` is given twice")));
+        }
+    }
+    // The placement the tool is shown in: given, or its component's only one.
+    let comp = s.doc.model_body_component(tb);
+    let placements: Vec<&str> = s.doc.occurrences.iter().filter(|o| o.component == comp).map(|o| o.name.as_str()).collect();
+    let occurrence = match t.get("occurrence").filter(|o| !o.is_null()) {
+        Some(o) => {
+            let id = super::joints::occurrence_id(s, Some(o), cmd)?;
+            if super::joints::component_of(s, id) != comp {
+                return Err(bad(cmd, format!("`tool.occurrence` is not a placement of the component holding `{tool}` ({})", placements.join(", "))));
+            }
+            Some(id)
+        }
+        None if placements.len() > 1 => {
+            return Err(bad(
+                cmd,
+                format!("`{tool}` is shown in {} placements ({}): give `tool.occurrence`", placements.len(), placements.join(", ")),
+            ));
+        }
+        None => None,
+    };
+    let mut names = targets.into_iter().map(BodyName);
+    let Some(body) = names.next() else { return Err(bad(cmd, "give `body` or `bodies`")) };
+    let kind = FeatureKind::Split {
+        body,
+        plane: solidcraft_doc::PlaneRef::Origin { name: "XY".into() },
+        tool: None,
+        sketch: None,
+        line: None,
+        bodies: names.collect(),
+        solid: Some(BodyName(tool)),
+        occurrence,
+    };
+    let mut out = add_feature(s, p, kind)?;
+    // The pieces of each target as made, so a caller maps them by their geometry.
+    let st = s.model.state();
+    let made = out["feature"].as_u64().and_then(|id| st.split_pieces(id)).unwrap_or_default();
+    let mut pieces = serde_json::Map::new();
+    for (target, names) in made {
+        let list: Vec<Value> = names
+            .iter()
+            .filter_map(|n| st.body(n))
+            .map(|b| {
+                let volume = solidcraft_kernel::measure(&b.body).map(|m| m.volume).unwrap_or(f64::NAN);
+                json!({"name": b.name, "volume": volume, "faces": b.body.face_count()})
+            })
+            .collect();
+        pieces.insert(target.clone(), json!(list));
+    }
+    out["pieces"] = Value::Object(pieces);
+    Ok(out)
 }
 
 /// The fits [`clearance_diameter`] knows (close, normal, loose, and their older names).

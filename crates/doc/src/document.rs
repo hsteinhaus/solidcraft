@@ -1081,6 +1081,18 @@ pub enum FeatureKind {
         sketch: Option<SketchId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         line: Option<String>,
+        /// More bodies split by the same tool, after `body` (Fusion splits several at once).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        bodies: Vec<BodyName>,
+        /// A whole solid body as the tool, not extended (Fusion's Split Body by a body): each
+        /// target splits into its pieces outside the body, then its pieces inside it; the tool
+        /// stays as it is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        solid: Option<BodyName>,
+        /// The placement (occurrence id) the `solid` tool is placed by; none: where its component
+        /// is placed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        occurrence: Option<u64>,
     },
     /// A construction axis (CONSTRUCT axes).
     ConstructionAxis {
