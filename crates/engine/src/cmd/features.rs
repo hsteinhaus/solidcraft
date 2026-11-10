@@ -3579,6 +3579,10 @@ fn offset_face(s: &mut Session, p: &Value) -> Result<Value> {
 mod patterns_tests;
 
 #[cfg(test)]
+#[path = "split_body_tests.rs"]
+mod split_body_tests;
+
+#[cfg(test)]
 #[path = "model_axis_tests.rs"]
 mod model_axis_tests;
 
