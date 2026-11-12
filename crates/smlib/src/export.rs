@@ -463,6 +463,9 @@ fn curves(flat: View, n_edges: usize) -> Res<(Vec<(b::Curve, Option<b::Curve>, [
                 // on it are that NURBS's, so the trims carry over as they are.
                 if forms.get(e) == Some(&1) {
                     let form = next_nurbs()?.record();
+                    // its interval onto the form's knots where it is a rounding past them, as a
+                    // NURBS edge's (an arc split where a round's end meets it: 7e-15 before)
+                    let r = onto(r, form.natural());
                     (b::Curve::Circle { frame: along(f, &form, r)?, radius }, Some(form), r, Some([1.0, 0.0]))
                 } else {
                     (b::Curve::Circle { frame: f, radius }, None, r, None)
@@ -479,6 +482,7 @@ fn curves(flat: View, n_edges: usize) -> Res<(Vec<(b::Curve, Option<b::Curve>, [
                 // Like a circle: on its NURBS form, the trims on it carry over as they are.
                 if forms.get(e) == Some(&1) {
                     let form = next_nurbs()?.record();
+                    let r = onto(r, form.natural());
                     (b::Curve::Ellipse { frame: along(f, &form, r)?, radii }, Some(form), r, Some([1.0, 0.0]))
                 } else {
                     (b::Curve::Ellipse { frame: f, radii }, None, r, None)
