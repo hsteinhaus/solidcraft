@@ -456,7 +456,14 @@ pub(crate) fn reuse_path(app: &mut SolveApp, path: &str) -> Result<bool, String>
         return Err("finish choosing a file before switching designs".into());
     }
     switch(app, index);
-    Ok(true)
+    // A clean design whose file changed on disk since it was read is read again (`adopt`).
+    Ok(!reads_again(app, path))
+}
+
+/// Is the active design `path`'s, clean, its file changed on disk since it was read? Opening
+/// that file again reads it into this tab: showing the tab would show the file as it was.
+pub(crate) fn reads_again(app: &SolveApp, path: &str) -> bool {
+    app.session.path.as_deref().is_some_and(|p| same_path(p, path)) && !app.session.is_dirty() && app.session.disk_changed()
 }
 
 pub(crate) fn same_path(a: &str, b: &str) -> bool {
@@ -506,7 +513,7 @@ pub fn active_is_blank(app: &SolveApp) -> bool {
 /// Show `session` (a design built or read elsewhere): in place of a blank active design,
 /// otherwise in a new tab. Whether it is shown (no tab left for it: the status says so).
 pub fn adopt(app: &mut SolveApp, session: Session) -> bool {
-    if active_is_blank(app) {
+    if active_is_blank(app) || session.path.as_deref().is_some_and(|p| reads_again(app, p)) {
         let rev = app.session.revision;
         crate::browser::discard_reveals(app);
         crate::semantic_content::leave_document(app);
@@ -1488,6 +1495,41 @@ pub(crate) fn saved_for_close(app: &mut SolveApp) {
 
 #[cfg(test)]
 mod tests {
+    /// A design open in a tab whose file another program rewrote (here hiding a body) is read
+    /// again when it is opened, not shown as it was; with unsaved changes the tab is kept, and
+    /// the reply says the file changed.
+    #[test]
+    fn opening_a_design_changed_on_disk_reads_it_again() {
+        use serde_json::json;
+        let dir = std::env::temp_dir().join(format!("solidcraft-reread-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("part.sc").to_string_lossy().into_owned();
+        let mut other = solidcraft_engine::Session::default();
+        other.execute("solid.box", &json!({"length": 10, "width": 12, "height": 14})).unwrap();
+        other.execute("file.save", &json!({"path": path})).unwrap();
+        let mut h = crate::scenario::Harness::new();
+        let open = |h: &mut crate::scenario::Harness| h.call_queued("engine.execute", json!({"command": "doc.open", "params": {"path": path}})).0;
+        assert_eq!(open(&mut h)["ok"], true);
+        assert!(h.app.session.visibility.hidden_bodies.is_empty());
+
+        other.execute("browser.visibility", &json!({"visible": false, "items": ["Body1"]})).unwrap();
+        other.execute("file.save", &json!({"path": path})).unwrap();
+        assert_eq!(open(&mut h)["ok"], true);
+        assert_eq!(h.app.session.visibility.hidden_bodies, ["Body1"], "the file as it is now");
+        assert_eq!(h.app.docs.count(), 1, "read into its own tab");
+        assert!(!h.app.session.is_dirty());
+
+        h.app.run("solid.box", json!({"length": 1, "width": 1, "height": 1, "corner": [40, 0, 0]})).unwrap();
+        other.execute("browser.visibility", &json!({"visible": true, "items": ["Body1"]})).unwrap();
+        other.execute("file.save", &json!({"path": path})).unwrap();
+        let v = open(&mut h);
+        assert!(v["result"]["warnings"][0].as_str().is_some_and(|w| w.contains("changed on disk")), "{v}");
+        assert!(h.app.session.is_dirty(), "unsaved changes are kept");
+        assert_eq!(h.app.session.visibility.hidden_bodies, ["Body1"]);
+        assert_eq!(h.app.docs.count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn reopening_saved_design_preserves_dirty_session_and_view() {
         let mut a = super::SolveApp::new(solidcraft_engine::Session::default(), Default::default());

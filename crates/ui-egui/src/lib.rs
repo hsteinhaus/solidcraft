@@ -2701,7 +2701,10 @@ impl SolveApp {
             Ok(false) => {}
         }
         self.home.open = false;
-        documents::prepare_open(self);
+        // A design read again takes its own tab's place.
+        if !documents::reads_again(self, path) {
+            documents::prepare_open(self);
+        }
         let params = self.load_params(path, options);
         if let Ok(r) = self.run("doc.open", params) {
             // An opened design comes up at the home view, not at the angle the design before it

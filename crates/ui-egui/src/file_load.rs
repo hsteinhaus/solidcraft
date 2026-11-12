@@ -398,8 +398,13 @@ fn reuse_open(app: &mut SolveApp, request: &Request) -> bool {
         Ok(false) => false,
         Ok(true) => {
             let s = &app.session;
-            request.answer(Ok(json!({"path": request.path, "features": s.doc.features.len(),
-                "errors": s.model.results.iter().filter(|r| r.error.is_some()).count(), "name": s.doc.name})));
+            let mut reply = json!({"path": request.path, "features": s.doc.features.len(),
+                "errors": s.model.results.iter().filter(|r| r.error.is_some()).count(), "name": s.doc.name});
+            // Only a design with unsaved changes is shown instead of its changed file.
+            if s.disk_changed() {
+                reply["warnings"] = json!(["the file changed on disk; its open tab has unsaved changes and is shown as it is"]);
+            }
+            request.answer(Ok(reply));
             true
         }
         Err(e) => {
