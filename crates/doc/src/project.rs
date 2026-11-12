@@ -578,8 +578,8 @@ fn exact_edges(body: &crate::ModelBody, plane: &Plane, edges: &[usize]) -> Vec<O
             Some(pieces) if !pieces.iter().any(free_form) => pieces.iter().map(link).collect(),
             Some(pieces) => {
                 let samples: Option<Vec<Vec2>> = pieces.iter().map(piece_samples).collect::<Option<Vec<_>>>().map(|s| s.concat());
-                match samples.as_deref().and_then(circular) {
-                    Some((g, _)) => Some(vec![g]),
+                match samples.as_deref().and_then(|s| circular(s).map(|(g, _)| g).or_else(|| elliptical(s))) {
+                    Some(g) => Some(vec![g]),
                     None => pieces.iter().map(link).collect(),
                 }
             }
@@ -645,6 +645,83 @@ fn circular(samples: &[Vec2]) -> Option<(LinkGeom, f64)> {
     // Counter-clockwise from `a` to `b`.
     let (a, b) = if sweep > 0.0 { (first, last) } else { (last, first) };
     Some((LinkGeom::Arc { c, a, b }, radius))
+}
+
+/// The ellipse through `samples` taken along a closed curve, when they all lie on one within
+/// [`CIRCLE_TOL`] of its major radius: an elliptical edge read as its rational spline comes in as
+/// the ellipse it is, centre and all.
+fn elliptical(samples: &[Vec2]) -> Option<LinkGeom> {
+    let (first, last) = (*samples.first()?, *samples.last()?);
+    if samples.len() < 6 {
+        return None;
+    }
+    let m = samples.iter().fold(Vec2::ZERO, |a, q| a + *q) / samples.len() as f64;
+    let s = samples.iter().map(|q| q.dist(m)).fold(0.0, f64::max);
+    if !(s.is_finite() && s > 0.0) {
+        return None;
+    }
+    // A x² + B xy + C y² + D x + E y = 1 about the mean, scaled to unit size → normal equations.
+    let (mut a, mut r) = ([[0.0f64; 5]; 5], [0.0f64; 5]);
+    for q in samples {
+        let (x, y) = ((q.x - m.x) / s, (q.y - m.y) / s);
+        let row = [x * x, x * y, y * y, x, y];
+        for i in 0..5 {
+            for j in 0..5 {
+                a[i][j] += row[i] * row[j];
+            }
+            r[i] += row[i];
+        }
+    }
+    for k in 0..5 {
+        let p = (k..5).max_by(|&i, &j| a[i][k].abs().total_cmp(&a[j][k].abs()))?;
+        a.swap(k, p);
+        r.swap(k, p);
+        if a[k][k].abs() < 1e-14 {
+            return None;
+        }
+        for i in k + 1..5 {
+            let f = a[i][k] / a[k][k];
+            for j in k..5 {
+                a[i][j] -= f * a[k][j];
+            }
+            r[i] -= f * r[k];
+        }
+    }
+    let mut t = [0.0f64; 5];
+    for k in (0..5).rev() {
+        t[k] = (r[k] - (k + 1..5).map(|j| a[k][j] * t[j]).sum::<f64>()) / a[k][k];
+    }
+    let [ca, cb, cc, cd, ce] = t;
+    let det = 4.0 * ca * cc - cb * cb;
+    if det <= 0.0 {
+        return None;
+    }
+    let (x0, y0) = ((cb * ce - 2.0 * cc * cd) / det, (cb * cd - 2.0 * ca * ce) / det);
+    let f0 = ca * x0 * x0 + cb * x0 * y0 + cc * y0 * y0 + cd * x0 + ce * y0 - 1.0;
+    let (mid, half) = ((ca + cc) / 2.0, ((ca - cc) / 2.0).hypot(cb / 2.0));
+    let (small, big) = (mid - half, mid + half);
+    if !(small > 0.0 && f0 < 0.0) {
+        return None;
+    }
+    let (ra, rb) = ((-f0 / small).sqrt() * s, (-f0 / big).sqrt() * s);
+    // The major axis: the eigenvector of the smaller eigenvalue.
+    let (u1, u2) = (Vec2::new(cb / 2.0, small - ca), Vec2::new(small - cc, cb / 2.0));
+    let u = if u1.len() >= u2.len() { u1 } else { u2 };
+    let u = if u.len() > 1e-12 {
+        u.normalized()?
+    } else if ca <= cc {
+        Vec2::new(1.0, 0.0)
+    } else {
+        Vec2::new(0.0, 1.0)
+    };
+    let v = Vec2::new(-u.y, u.x);
+    let c = m + Vec2::new(x0, y0) * s;
+    let tol = ra * CIRCLE_TOL;
+    let on = |q: &Vec2| {
+        let d = *q - c;
+        ((d.dot(u) / ra).hypot(d.dot(v) / rb) - 1.0).abs() * ra <= tol
+    };
+    (first.dist(last) <= tol && samples.iter().all(on)).then(|| LinkGeom::Ellipse { c, major: c + u * ra, minor: rb })
 }
 
 /// [`CIRCLE_SAMPLES`] + 1 points along a piece of an edge, ends included; `None` for a spline

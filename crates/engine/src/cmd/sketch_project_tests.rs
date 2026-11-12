@@ -902,6 +902,31 @@ fn tilted_circles_project_to_exact_ellipses_and_splines_stay_splines() {
     assert_eq!(c["points"].as_array().unwrap().len(), 3);
 }
 
+/// A plate 80 × 60 × 10 with an elliptical hole (centre (40, 30), semi-axes 15 and 8): its top
+/// face projected brings the hole in as one ellipse, centre and all, as Fusion's projection does
+/// (Pixracer_Basis' Sketch8 centres a rectangle on such a centre).
+#[test]
+fn a_faces_elliptical_hole_projects_to_an_ellipse() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Plate"}));
+    for [a, b] in [[[0, 0], [80, 0]], [[80, 0], [80, 60]], [[80, 60], [0, 60]], [[0, 60], [0, 0]]] {
+        run(&mut s, "sketch.line", json!({"points": [a, b]}));
+    }
+    run(&mut s, "sketch.ellipse", json!({"center": [40, 30], "major": [55, 30], "minor_radius": 8}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "Plate", "distance": 10, "profiles": [{"point": [5, 5]}], "exact_regions": true}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 10], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}}));
+    run(&mut s, "sketch.project", json!({"refs": [{"face": [5, 5, 10]}]}));
+    let si = inspect(&mut s);
+    let e: Vec<&Value> = si["curves"].as_array().unwrap().iter().filter(|c| c["type"] == "ellipse").collect();
+    assert_eq!(e.len(), 1, "{si}");
+    let at = |v: &Value| [v[0].as_f64().unwrap(), v[1].as_f64().unwrap()];
+    let (c, m) = (at(&e[0]["center_at"]), at(&e[0]["major_at"]));
+    assert!((c[0] - 40.0).abs() < 1e-9 && (c[1] - 30.0).abs() < 1e-9, "{}", e[0]);
+    assert!(((m[0] - c[0]).hypot(m[1] - c[1]) - 15.0).abs() < 1e-9, "{}", e[0]);
+    assert!((e[0]["minor_radius"].as_f64().unwrap() - 8.0).abs() < 1e-9, "{}", e[0]);
+}
+
 #[test]
 fn sweeps_and_pipes_follow_3d_sketch_curves() {
     // A line projected onto a sphere: a 3D arc on its top.
