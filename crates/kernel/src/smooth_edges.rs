@@ -349,6 +349,12 @@ mod tests {
     use solidcore_record::brep::Surface;
     use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2};
 
+    /// The rounds SMLib puts back follow their tangent chains at the app's angle.
+    #[test]
+    fn put_back_chains_follow_the_smooth_angle() {
+        assert_eq!(solidcraft_smlib::CHAIN_ANGLE, ANGLE);
+    }
+
     fn circle(radius: f64, count: usize) -> Loop2 {
         let step = std::f64::consts::TAU / count as f64;
         let k = 4. / 3. * (step / 4.).tan() * radius;

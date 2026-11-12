@@ -77,6 +77,7 @@ pub(crate) fn fixes() -> UpstreamFixes {
     f.fillet_refuse_non_manifold_result = true;
     f.fillet_blend_vertices_on_their_faces = true;
     f.boolean_vertices_on_seams = true;
+    f.fillet_removal_continues_analytic_faces = true;
     f.fillet_vertex_error_diagnostics = true;
     f.fillet_corner_ball_patch = true;
     f.fillet_chamfer_cone_on_arc = true;

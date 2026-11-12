@@ -30,14 +30,17 @@ use solidcore::blend::fillet_executive::p1::{FilletLaw, FilletLawKind};
 use solidcore::blend::fillet_executive::p3::{ErrorInfo, FitKind, NoRoomReason};
 use solidcore::blend::fillet_executive::session::{FilletObject, FilletSession};
 use solidcore::blend::fillet_geom::p1::{FilletCornerType, FilletErrorType};
+use solidcore::blend::fillet_removal::FilletRemoval;
 use solidcore::blend::fillet_section::section::GN_THUMBWEIGHT_EQUAL_AREA;
 use solidcore::blend::fillet_solver::p1::FilletSurfaceGeneratorType;
+use solidcore::blend::identify_fillet::{IdentifyFilletOptions, identify_fillet};
 use solidcore::geom::attribute::{Attribute, AttributeHandlers, Behavior, ids as attribute_ids};
 use solidcore::geom::vector3d::{Point3, Vec3};
 use solidcore::kernel::Kernel;
 use solidcore::mass::integrator::properties::edge_length;
 use solidcore::nurbs::b_spline_curve::p1::{BSplineCurve, BSplineCurveForm, CanonicalData, KnotType};
 use solidcore::nurbs::b_spline_surface_n_lib::p2::OrientType;
+use solidcore::offset::offset_faces::TANGENCY_TOL_DEG;
 use solidcore::query::api_queries::edge_closest_point;
 use solidcore::query::brep::evaluate_surface_normal;
 use solidcore::topology::brep::p1 as brep_p1;
@@ -794,6 +797,206 @@ fn overflow_first(
     Ok(untagged(fresh))
 }
 
+/// `PutBack::ID`: above SMLib's own ids (`SM_AI_USER_1 + 10`).
+const PUT_BACK_ID: u64 = attribute_ids::USER_1 + 10;
+
+/// The radius of a round in the way ([`rounds_in_the_way`]) on the sharp edge it left, until it
+/// is put back: handed on through every split and copy (`SM_AB_COPY`), so afterwards the edges
+/// carrying it are what the new rounds left of that sharp edge.
+#[derive(Debug, Clone, PartialEq)]
+struct PutBack(f64);
+
+impl AttributeHandlers for PutBack {}
+
+/// Whether rounds in the way come off and go back ([`rounds_in_the_way`]).
+const ROUNDS_IN_THE_WAY_COME_OFF: bool = true;
+
+/// `rounds_in_the_way`: the rounds of [`blend_call`] (`picked` its picked edges, `each` their
+/// sizes) when the ball does not fit a face it rolls on because that face is a round already on
+/// the body, smaller than the new one, that a picked edge ends on (the edge is no contact line of
+/// it), as a CAD system rolls a round over an existing one. On a fresh copy of `body`: each such
+/// round comes off (`DeleteFilletFace`: its faces meet in their sharp edge again, tagged
+/// [`PutBack`]), what is left of the picked edges (tagged [`Picked`]) is rounded, then each round
+/// goes back at its radius on what is left of its sharp edge. A picked edge with nothing left (it
+/// ran across a round's end) is gone: its points are flagged in `dropped`. `None` where no such
+/// round is found or one does not come off: the refusal stands.
+#[allow(clippy::too_many_arguments)] // as overflow_first
+fn rounds_in_the_way(
+    k: &mut Kernel,
+    body: &Body,
+    points: &[[f64; 3]],
+    tolerance: f64,
+    section: Section<'_>,
+    picked: &[EdgeId],
+    each: &[f64],
+    dropped: &mut [bool],
+) -> solidcore::Result<Option<Out<Brep>>> {
+    let mut fresh = {
+        let g = body.0.lock().unwrap_or_else(PoisonError::into_inner);
+        brep_copy(k, &g)?
+    };
+    let again = match pick_edges(k, &fresh, points, tolerance)? {
+        Ok((again, _)) if again.len() == picked.len() => again,
+        _ => return Ok(None),
+    };
+    // the picked edge of each point
+    let mut of_point = Vec::with_capacity(points.len());
+    for p in points {
+        of_point.push(match pick_edges(k, &fresh, std::slice::from_ref(p), tolerance)? {
+            Ok((one, _)) => one.first().and_then(|e| again.iter().position(|a| a == e)),
+            Err(_) => None,
+        });
+    }
+    // the rounds in the way
+    let mut rounds: Vec<(FaceId, f64)> = Vec::new();
+    for (&e, &size) in again.iter().zip(each) {
+        for f in edge::faces(&fresh, e, None)? {
+            if rounds.iter().any(|r| r.0 == f) {
+                continue;
+            }
+            let options = IdentifyFilletOptions {
+                tol_3d: face_p2::tolerance(&fresh, f)?,
+                tangency_tol_deg: TANGENCY_TOL_DEG,
+                require_tangent: true,
+                require_manifold: true,
+                want_min_max_radii: false,
+            };
+            let id = identify_fillet(k, &mut fresh, f, &options)?;
+            let constant_round = id.is_fillet && id.cross_section == 0 && id.solver_type == 0;
+            let contact = id.rail_edges_min.contains(&e) || id.rail_edges_max.contains(&e);
+            if constant_round && !contact && id.radius > 0.0 && id.radius < size {
+                rounds.push((f, id.radius));
+            }
+        }
+    }
+    if rounds.is_empty() {
+        return Ok(None);
+    }
+    for (i, &to) in again.iter().enumerate() {
+        fresh.add_attribute(EntityRef::Edge(to), Attribute::application(PICKED_ID, Behavior::Copy, Picked(i)))?;
+    }
+    let editing = fresh.editing_enabled();
+    fresh.set_editing_enabled(true);
+    for &(f, radius) in &rounds {
+        let mut removal = FilletRemoval::new(f, face_p2::tolerance(&fresh, f)?);
+        let removed = removal.remove_face(k, &mut fresh);
+        fresh.refresh_cached_topology();
+        match (removed, removal.sharp_edge()) {
+            (Ok(()), Some(sharp)) => {
+                fresh.add_attribute(EntityRef::Edge(sharp), Attribute::application(PUT_BACK_ID, Behavior::Copy, PutBack(radius)))?;
+            }
+            // a round that does not come off: the refusal stands
+            _ => return Ok(None),
+        }
+    }
+    fresh.set_editing_enabled(editing);
+    // what is left of the picked edges, rounded
+    let edges = brep_p1::edges(&fresh, None)?;
+    let (mut left_edges, mut left_sizes) = (Vec::new(), Vec::new());
+    for (i, &size) in each.iter().enumerate() {
+        let mut left = false;
+        for &e in &edges {
+            if picked_on(&fresh, e).is_some_and(|(_, p)| p == i) {
+                left_edges.push(e);
+                left_sizes.push(size);
+                left = true;
+            }
+        }
+        if !left {
+            for (flag, _) in dropped.iter_mut().zip(&of_point).filter(|(_, o)| **o == Some(i)) {
+                *flag = true;
+            }
+        }
+    }
+    if let Err(e) = blend_edges(k, &mut fresh, &left_edges, &left_sizes, section, None, &[], None)? {
+        return Ok(Some(Err(e.err().unwrap_or(Error::Unsupported))));
+    }
+    // each round back on what is left of its sharp edge, its tag off
+    let (mut back_edges, mut back_sizes) = (Vec::new(), Vec::new());
+    for e in brep_p1::edges(&fresh, None)? {
+        let tag = fresh
+            .entity_attributes(EntityRef::Edge(e))
+            .into_iter()
+            .find(|(_, a)| a.attribute_id() == PUT_BACK_ID)
+            .and_then(|(h, a)| a.application_value::<PutBack>().map(|p| (h, p.0)));
+        if let Some((h, radius)) = tag {
+            fresh.remove_attribute(EntityRef::Edge(e), h)?;
+            back_edges.push(e);
+            back_sizes.push(radius);
+        }
+    }
+    // as the app rounds a picked edge, each with its tangent chain: the faces round the sharp
+    // edge now run on tangentially into the new rounds
+    let (back_edges, back_sizes) = with_chains(k, &mut fresh, &back_edges, &back_sizes)?;
+    if !back_edges.is_empty()
+        && let Err(e) = blend_edges(k, &mut fresh, &back_edges, &back_sizes, Section::Round(Turn::Mitre), None, &[], None)?
+    {
+        return Ok(Some(Err(e.err().unwrap_or(Error::Unsupported))));
+    }
+    Ok(Some(untagged(fresh)))
+}
+
+/// Edges meeting at an angle (radians) below this continue one another, and an edge whose faces
+/// meet at an angle below it is smooth: the app's tangent chain's angle (half a degree,
+/// `solidcraft_kernel::smooth_edges::ANGLE`).
+pub const CHAIN_ANGLE: f64 = 0.5 * std::f64::consts::PI / 180.0;
+
+/// `edges` (at `sizes`), each followed by its tangent chain at its size: every edge continuing a
+/// chain edge within [`CHAIN_ANGLE`] at a shared vertex, until no more do, as the app's
+/// `tangent_chain` follows them. A smooth edge or an edge of one face ends a chain, and so does
+/// an edge of the other convexity (a round cannot pass from one side of the faces to the other).
+fn with_chains(k: &Kernel, b: &mut Brep, edges: &[EdgeId], sizes: &[f64]) -> solidcore::Result<(Vec<EdgeId>, Vec<f64>)> {
+    let (mut out, mut out_sizes) = (edges.to_vec(), sizes.to_vec());
+    let cos = CHAIN_ANGLE.cos();
+    let mut i = 0;
+    while let Some(&e) = out.get(i) {
+        let size = out_sizes.get(i).copied().unwrap_or_default();
+        i += 1;
+        let (s, t) = edge::start_end_vertices(b, e)?;
+        if s == t {
+            continue;
+        }
+        let here = convex(k, b, e)?;
+        for (v, at_start) in [(s, true), (t, false)] {
+            let Some(v) = v else { continue };
+            let d = leaving(k, b, e, at_start)?;
+            for f in vertex::edges(b, v, None)? {
+                if out.contains(&f) || edge::faces(b, f, None)?.len() != 2 || edge::is_tangent_edge(k, b, f, CHAIN_ANGLE.to_degrees(), false)? {
+                    continue;
+                }
+                let (fs, ft) = edge::start_end_vertices(b, f)?;
+                if fs == ft {
+                    continue;
+                }
+                let g = leaving(k, b, f, fs == Some(v))?;
+                let turns_over = matches!((here, convex(k, b, f)?), (Some(a), Some(c)) if a != c);
+                if !turns_over && d.dot(g) < -cos {
+                    out.push(f);
+                    out_sizes.push(size);
+                }
+            }
+        }
+    }
+    Ok((out, out_sizes))
+}
+
+/// The unit direction edge `e` leaves its start (`at_start`) or end vertex in.
+fn leaving(k: &Kernel, b: &Brep, e: EdgeId, at_start: bool) -> solidcore::Result<Vec3> {
+    let t = edge::end_tangent(k, b, e, at_start)?;
+    let t = t * (1.0 / t.length());
+    Ok(if at_start { t } else { t * -1.0 })
+}
+
+/// Whether edge `e` is convex (its faces meet at less than 180° inside the body) at its midpoint:
+/// the direction into its second face, square to it, points against its first face's outward
+/// normal. `None` where a face frame cannot be read.
+fn convex(k: &Kernel, b: &mut Brep, e: EdgeId) -> solidcore::Result<Option<bool>> {
+    let Some(u0) = edge::blend_edgeuse(k, b, e)? else { return Ok(None) };
+    let Some(u1) = eu_p1::radial(b, u0)? else { return Ok(None) };
+    let (Some((n0, _)), Some((_, into1))) = (face_frame(k, b, u0)?, face_frame(k, b, u1)?) else { return Ok(None) };
+    Ok(Some(into1.dot(n0) < 0.0))
+}
+
 /// `b` with [`Picked`] off its edges.
 fn untagged(mut b: Brep) -> Out<Brep> {
     let edges = brep_p1::edges(&b, None).map_err(status)?;
@@ -965,6 +1168,19 @@ fn blend_call(
         let done = blend_edges_stopping(k, &mut w, &picked, &each, section, None, &back, (open == Corners::Open).then_some(&mut patches), first)?;
         if stopped.is_some() {
             return Ok(match overflow_first(k, body, points, tolerance, section, &picked, &mitred, &each, &mut w, dropped)? {
+                Ok(fresh) => finish(fresh, solid_in)?,
+                Err(e) => Err(e),
+            });
+        }
+        // A round already on the body in the way of the ball comes off and goes back.
+        if ROUNDS_IN_THE_WAY_COME_OFF
+            && back.is_empty()
+            && open == Corners::Filled
+            && matches!(section, Section::Round(_))
+            && matches!(done, Err(Err(Error::TooLarge { why: Some(crate::RoomReason::BallDoesNotFit), .. })))
+            && let Some(made) = rounds_in_the_way(k, body, points, tolerance, section, &picked, &each, dropped)?
+        {
+            return Ok(match made {
                 Ok(fresh) => finish(fresh, solid_in)?,
                 Err(e) => Err(e),
             });
