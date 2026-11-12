@@ -2965,6 +2965,43 @@ fn a_joint_origin_at_a_round_faces_axis_key_point_follows_the_face() {
     }
 }
 
+/// The middle of a round face whose ends are not square to its axis: halfway between its exact
+/// ends along the axis (from its edges' curves), not the mesh's.
+#[test]
+fn a_joint_origin_at_the_middle_of_a_round_face_with_a_slanted_end_takes_its_exact_extent() {
+    // the top cut by a sphere off the axis (highest at the side nearest its centre), or by a plane
+    // tilted 30 degrees through z 30 (highest 30 + 5 tan 30 deg)
+    let off = 5.0 - 3.7_f64.hypot(1.52);
+    for (domed, top) in [(true, 10.0 + (28.0_f64.powi(2) - off * off).sqrt()), (false, 30.0 + 5.0 * 30.0_f64.to_radians().tan())] {
+        let mut s = Session::default();
+        run(&mut s, "component.create", json!({"name": "Part"}));
+        run(&mut s, "solid.cylinder", json!({"base": [0, 0, 0], "radius": 5, "height": 40, "body_name": "Rod"}));
+        if domed {
+            run(&mut s, "solid.sphere", json!({"radius": 28, "center": [3.7, 1.52, 10], "operation": "intersect"}));
+        } else {
+            run(&mut s, "solid.box", json!({"length": 100, "width": 100, "height": 100, "corner": [-50, -50, -100], "body_name": "Tool"}));
+            run(&mut s, "solid.move", json!({"bodies": ["Tool"], "axis": [1, 0.37, 0], "angle": "30 deg"}));
+            run(&mut s, "solid.move", json!({"bodies": ["Tool"], "translate": [0, 0, 30]}));
+            run(&mut s, "solid.combine", json!({"target": "Rod", "tools": ["Tool"], "operation": "intersect"}));
+        }
+        run(&mut s, "component.activate", json!({"component": "root"}));
+        run(&mut s, "joint.origin", json!({"occurrence": "Part", "cylinder": [5, 0, 7], "at": "middle", "name": "M"}));
+        let st = s.model.state();
+        let o = s.doc.assembly.origins.iter().find(|o| o.name == "M").map(|o| o.origin.clone()).unwrap();
+        let m = solidcraft_doc::joints::resolve_origin(&s.doc, &st, &o).unwrap();
+        let at = Vec3::new(m[3][0], m[3][1], m[3][2]);
+        // the mesh's extent only nears the exact top on the dome (an ellipse's extremes are mesh
+        // points)
+        let b = st.bodies.iter().find(|b| !b.body.is_mesh()).unwrap();
+        let round = |f: &usize| matches!(solidcraft_kernel::face_surface(&b.body, *f), Some(solidcraft_kernel::FaceSurface::Cylinder { .. }));
+        let face = (0..b.body.record().faces.len()).find(round).unwrap();
+        let mesh = solidcraft_kernel::cylinder_face(&b.body, &b.mesh(), face).unwrap();
+        let mesh_mid = (mesh.axis_point + mesh.axis * (0.5 * (mesh.start + mesh.end))).z;
+        assert!(!domed || (mesh_mid - 0.5 * top).abs() > 1e-6, "domed {domed}: mesh middle {mesh_mid} is exact");
+        assert!(at.dist(Vec3::new(0.0, 0.0, 0.5 * top)) < 1e-6, "domed {domed}: {at:?}, want z {}", 0.5 * top);
+    }
+}
+
 /// A joint origin at a body's vertex, as Fusion's is: at the corner, found again by the names of
 /// the edges that meet there, so it follows the corner when a parameter moves it. z is +Z of the
 /// component unless given.

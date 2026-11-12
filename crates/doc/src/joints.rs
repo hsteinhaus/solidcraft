@@ -1182,7 +1182,7 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
             let c = nf.cylinder().ok_or_else(|| DocError::Invalid(format!("joint origin: face `{name}` is not round")))?;
             let along = match at {
                 AxialPoint::Start => c.start,
-                AxialPoint::Middle => 0.5 * (c.start + c.end),
+                AxialPoint::Middle => nf.axial_middle(&c),
                 AxialPoint::End => c.end,
             };
             let centre = c.axis_point + c.axis * along;

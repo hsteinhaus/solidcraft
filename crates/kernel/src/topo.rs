@@ -346,6 +346,53 @@ pub fn cylinder_face(b: &Body, mesh: &Mesh, face: usize) -> Option<CylinderFace>
     (c.start.is_finite() && c.end.is_finite()).then_some(c)
 }
 
+/// The extent of face `face` of `b` along `axis` from `origin` (the body's own coordinates), from
+/// its edges' exact curves: each sampled densely, its extremes then refined by golden section to
+/// the curve's precision. `None` for a mesh body or an edge whose curve can't be evaluated.
+pub fn face_axial_extent(b: &Body, face: usize, origin: Vec3, axis: UnitVec3) -> Option<(f64, f64)> {
+    use solidcraft_geom::brep::eval::CurveEval;
+    const SAMPLES: usize = 256;
+    if b.is_mesh() {
+        return None;
+    }
+    let record = b.record();
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for l in &record.faces.get(face)?.loops {
+        let Loop::Edges { edges } = l else { return None };
+        for oe in edges {
+            let e = record.edges.get(oe.edge as usize)?;
+            let c = CurveEval::new(e.parameters()).ok()?;
+            let (t0, t1) = (e.interval[0].min(e.interval[1]), e.interval[0].max(e.interval[1]));
+            let step = (t1 - t0) / SAMPLES as f64;
+            for sign in [1.0, -1.0] {
+                // the largest of `sign` times the distance along the axis
+                let f = |t: f64| c.point(t).map(|p| sign * (p - origin).dot(*axis));
+                let mut best = (f64::NEG_INFINITY, t0);
+                for k in 0..=SAMPLES {
+                    let t = t0 + step * k as f64;
+                    let v = f(t)?;
+                    if v > best.0 {
+                        best = (v, t);
+                    }
+                }
+                let (mut a, mut z) = ((best.1 - step).max(t0), (best.1 + step).min(t1));
+                let g = 0.5 * (5.0_f64.sqrt() - 1.0);
+                for _ in 0..100 {
+                    let (p, q) = (z - g * (z - a), a + g * (z - a));
+                    if f(p)? < f(q)? {
+                        a = p;
+                    } else {
+                        z = q;
+                    }
+                }
+                let v = best.0.max(f(0.5 * (a + z))?) * sign;
+                (lo, hi) = (lo.min(v), hi.max(v));
+            }
+        }
+    }
+    (lo <= hi).then_some((lo, hi))
+}
+
 impl CylinderFace {
     /// How far `p` is from the face: off its cylinder, and past its ends along the axis.
     pub fn off(&self, p: Vec3) -> f64 {

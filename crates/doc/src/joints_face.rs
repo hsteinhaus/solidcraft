@@ -88,6 +88,17 @@ impl NamedFace<'_> {
         self.own_cylinder().map(|c| placed(&self.offset, c))
     }
 
+    /// Where along cylinder `c` (this face's, [`Self::cylinder`]) the face's middle lies: halfway
+    /// between its exact ends from its edges' curves ([`solidcraft_kernel::face_axial_extent`]),
+    /// which for ends not square to the axis the mesh only nears; halfway along `c` (the mesh's)
+    /// for a face without exact curves.
+    pub fn axial_middle(&self, c: &CylinderFace) -> f64 {
+        let o = self.local(c.axis_point);
+        let exact =
+            (self.local(c.axis_point + *c.axis) - o).unit().and_then(|a| solidcraft_kernel::face_axial_extent(&self.body.body, self.face, o, a));
+        exact.map_or(0.5 * (c.start + c.end), |(lo, hi)| 0.5 * (lo + hi))
+    }
+
     /// The face's centre ([`planar_centre`]) and outward normal (the component's coordinates),
     /// when it is planar.
     pub fn plane(&self) -> Result<Option<(Vec3, Vec3)>> {
