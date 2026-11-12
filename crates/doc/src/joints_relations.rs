@@ -89,6 +89,7 @@ mod tests {
             values: Vec::new(),
             limits: Vec::new(),
             flip: false,
+            axis: Default::default(),
             offset: 0.0,
             angle: 0.6,
             suppressed: false,

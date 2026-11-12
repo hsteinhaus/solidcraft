@@ -152,12 +152,12 @@ fn rotation(u: Vec3, a: f64) -> Mat {
 /// The joint's motion as URDF steps, in order from A's frame: (kind, axis, index of the value).
 /// `None` for a relation whose turns follow a fixed step (a tilt, or the offset off a plane or
 /// line): URDF has no fixed step inside a joint's chain.
-fn steps(kind: JointKind) -> Option<Vec<(Step, Vec3, usize)>> {
+fn steps(j: &Joint) -> Option<Vec<(Step, Vec3, usize)>> {
     use Step::{Prismatic as P, Revolute as R};
-    Some(match kind {
+    Some(match j.kind {
         JointKind::Rigid => vec![],
         JointKind::Revolute => vec![(R, Vec3::Z, 0)],
-        JointKind::Slider => vec![(P, Vec3::Z, 0)],
+        JointKind::Slider => vec![(P, j.axis.dir(), 0)],
         JointKind::Cylindrical => vec![(R, Vec3::Z, 0), (P, Vec3::Z, 1)],
         JointKind::PinSlot => vec![(P, Vec3::X, 1), (R, Vec3::Z, 0)],
         JointKind::Planar => vec![(P, Vec3::X, 0), (P, Vec3::Y, 1), (R, Vec3::Z, 2)],
@@ -385,8 +385,8 @@ impl<'a> Tree<'a> {
     /// `child` on joint `j` from `p` (already in the tree): the joint's chain and the child's link.
     fn attach(&mut self, j: &Joint, fa: &Mat, p: u64, child: u64, q: &[f64]) -> Option<()> {
         // A relation URDF can't write is fixed where it is: the child link's frame is the joint's.
-        let (chain, m) = match steps(j.kind) {
-            Some(chain) => (chain, joints::motion(j.kind, q)),
+        let (chain, m) = match steps(j) {
+            Some(chain) => (chain, joints::joint_motion(j, q)),
             None => {
                 self.warnings.push(format!("joint `{}` is a {:?} relation, which URDF has no joint for: written fixed as it is", j.name, j.kind));
                 (Vec::new(), IDENTITY)

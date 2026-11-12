@@ -55,6 +55,7 @@ fn joint_json(s: &Session, st: &ModelState, sol: &joints::Solution, j: &Joint, q
         "suppressed": j.suppressed,
         "visible": s.joint_visible(j.id),
         "flip": j.flip,
+        "axis": j.axis,
         "offset": j.offset,
         "angle": j.angle.to_degrees(),
         "values": named_values(j, q),

@@ -7,7 +7,10 @@ use crate::schema::{input_schema_for, output_schema_for};
 
 #[test]
 fn schemas_and_the_key_check_agree() {
-    assert_keys(input_schema_for::<EditJointParams>(), &["a", "angle", "b", "flip", "joint", "name", "offset", "quiet", "suppressed", "type"]);
+    assert_keys(
+        input_schema_for::<EditJointParams>(),
+        &["a", "angle", "axis", "b", "flip", "joint", "name", "offset", "quiet", "suppressed", "type"],
+    );
 }
 
 #[test]

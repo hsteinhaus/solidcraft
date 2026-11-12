@@ -252,6 +252,7 @@ fn a_panel_full_of_parts_placed_by_relations_stays_solved() {
                 values: vec![0.0; kind.dofs().len()],
                 limits: vec![None; kind.dofs().len()],
                 flip,
+                axis: Default::default(),
                 offset,
                 angle: 0.0,
                 suppressed: false,

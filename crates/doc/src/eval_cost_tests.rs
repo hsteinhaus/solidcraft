@@ -137,6 +137,7 @@ fn joint_face_measurements_are_shared_across_motion_samples_and_snap_kinds() {
         values: vec![0.0],
         limits: Vec::new(),
         flip: true,
+        axis: Default::default(),
         offset: 0.0,
         angle: 0.0,
         suppressed: false,

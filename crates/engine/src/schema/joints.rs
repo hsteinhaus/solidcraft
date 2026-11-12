@@ -60,6 +60,9 @@ pub struct EditJointParams {
     /// Whether b's z lies along a's instead of against it, as joint.create's `flip`.
     #[serde(default, deserialize_with = "present")]
     pub flip: Option<bool>,
+    /// A slider's slide axis: x, y or z of a's joint frame, as joint.create's `axis`.
+    #[serde(default, deserialize_with = "present")]
+    pub axis: Option<String>,
     /// The distance from a's frame to b's along z: a length, or an expression the joint follows.
     #[serde(default, deserialize_with = "present")]
     pub offset: Option<LengthExpr>,

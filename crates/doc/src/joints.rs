@@ -496,6 +496,37 @@ impl JointKind {
     }
 }
 
+/// The axis of A's joint frame a slider slides along (Fusion's joint direction X, Y or Z).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlideAxis {
+    X,
+    Y,
+    #[default]
+    Z,
+}
+
+impl SlideAxis {
+    pub fn parse(s: &str) -> Option<SlideAxis> {
+        Some(match s.to_ascii_lowercase().as_str() {
+            "x" => SlideAxis::X,
+            "y" => SlideAxis::Y,
+            "z" => SlideAxis::Z,
+            _ => return None,
+        })
+    }
+    pub fn is_z(&self) -> bool {
+        *self == SlideAxis::Z
+    }
+    pub fn dir(self) -> Vec3 {
+        match self {
+            SlideAxis::X => Vec3::X,
+            SlideAxis::Y => Vec3::Y,
+            SlideAxis::Z => Vec3::Z,
+        }
+    }
+}
+
 /// A joint between two occurrences.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Joint {
@@ -514,6 +545,9 @@ pub struct Joint {
     /// faces meeting).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub flip: bool,
+    /// A slider's slide axis in A's joint frame (z for every other joint).
+    #[serde(default, skip_serializing_if = "SlideAxis::is_z")]
+    pub axis: SlideAxis,
     /// Distance from A's frame to B's along z, and a turn about it (radians).
     #[serde(default)]
     pub offset: f64,
@@ -942,6 +976,17 @@ pub fn motion(kind: JointKind, q: &[f64]) -> Mat {
     }
 }
 
+/// The joint's motion in A's frame for its values: `motion`, a slider along its axis.
+pub fn joint_motion(j: &Joint, q: &[f64]) -> Mat {
+    match j.kind {
+        JointKind::Slider => {
+            let d = j.axis.dir() * q.first().copied().unwrap_or(0.0);
+            shift(d.x, d.y, d.z)
+        }
+        kind => motion(kind, q),
+    }
+}
+
 fn turn_zyx(yaw: f64, pitch: f64, roll: f64) -> Mat {
     mat_mul(&mat_mul(&rot_z(yaw), &rot_y(pitch)), &rot_x(roll))
 }
@@ -964,7 +1009,7 @@ fn tail(j: &Joint, q: &[f64]) -> Mat {
 
 /// B's joint frame in A's for the joint's values: `M(q) · Flip · tail`.
 fn link_of(j: &Joint, q: &[f64]) -> Mat {
-    mat_mul(&mat_mul(&motion(j.kind, q), &flip_of(j)), &tail(j, q))
+    mat_mul(&mat_mul(&joint_motion(j, q), &flip_of(j)), &tail(j, q))
 }
 
 /// Bodies of a component in the model (its own frame).
@@ -2923,6 +2968,7 @@ mod tests {
                 values: vec![if id == 1 { start } else { 0.0 }],
                 limits: vec![(id == 3).then_some((-50.0, 50.0))],
                 flip: false,
+                axis: Default::default(),
                 offset: 0.0,
                 angle: 0.0,
                 suppressed: false,

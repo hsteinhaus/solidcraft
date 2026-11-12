@@ -19,6 +19,7 @@ fn joint(id: u64, a: u64, b: u64) -> Joint {
         values: vec![0.25],
         limits: vec![Some((-1.0, 1.0))],
         flip: true,
+        axis: Default::default(),
         offset: 2.0,
         angle: 0.1,
         suppressed: false,

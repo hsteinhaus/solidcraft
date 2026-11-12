@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use solidcore_record::Vec3;
 use solidcraft_doc::expr::{self, Kind};
 use solidcraft_doc::joints::cam::{self, Cam, CamProfile, Follower};
-use solidcraft_doc::joints::{self, Coupling, Joint, JointExprs, JointKind, JointOrigin, MotionLink, NamedOrigin, Size, Snap, XRef};
+use solidcraft_doc::joints::{self, Coupling, Joint, JointExprs, JointKind, JointOrigin, MotionLink, NamedOrigin, Size, SlideAxis, Snap, XRef};
 use solidcraft_geom::Aabb3;
 
 use super::CommandSpec;
@@ -31,7 +31,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("joint.create", "Joint", joint).at("SOLID", "ASSEMBLE").icon("joint").key("J").params(
         "type: rigid|revolute|slider|cylindrical|pin_slot|planar|ball, or a relation: parallel|perpendicular|angle|point_on_plane|point_on_line|line_on_plane \
          (ties only some directions or points, made where the parts are; several between two parts add up); a, b: joint origins ({occurrence, face|circle|edge|point: [x,y,z] in world, or face|circle: \"<face name>\"; z? for a point, end?, x? as joint.origin} | origin name); \
-         suppressed?: bool (made suppressed: it places nothing, its parts stay where they are, until joint.edit unsuppresses it); values?: [angles in deg or expressions, distances]; limits?: [[min, max] | null…]; flip?: bool (default false: the origins are mated, \
+         suppressed?: bool (made suppressed: it places nothing, its parts stay where they are, until joint.edit unsuppresses it); values?: [angles in deg or expressions, distances]; limits?: [[min, max] | null…]; axis?: x|y|z (a slider only: the axis of a's joint frame it slides along, as Fusion's joint direction; default z); flip?: bool (default false: the origins are mated, \
          b's z against a's as two faces meet; true: b's z along a's, so two origins given at one point with the same z and x stay as they are; \
          a point origin without x takes its x from z, so give x on both, or use joint.as_built, to keep a turned part where it is); \
          offset?: mm or an expression; angle?: deg or an expression (an angle relation's tilt from mated; for other joints the default \
@@ -96,11 +96,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         ),
     CommandSpec::new("joint.delete", "Delete Joint", delete).icon("delete").params("joint: id|name (or origin: name, link: index)"),
     CommandSpec::new("joint.list", "List Joints", list).icon("list").noundo().params(
-        "→ joints (type, occurrences, values, limits; expressions: {offset?, angle?, values?} when they were typed as expressions), origins, links, degrees of freedom, conflicts, floating: [{occurrences, joints}] \
+        "→ joints (type, occurrences, values, limits, axis: a slider's slide axis (z for other joints); expressions: {offset?, angle?, values?} when they were typed as expressions), origins, links, degrees of freedom, conflicts, floating: [{occurrences, joints}] \
          (joint chains joined to nothing grounded: the solver places none of them, so driving them moves nothing)",
     ),
     CommandSpec::new("joint.inspect", "Inspect Joint", inspect::inspect).icon("inspect").noundo().params(
-        "joint?: id|name (default: every joint) → joints: [{id, name, type, suppressed, visible, flip, offset (mm), angle (deg), values: as joint.list \
+        "joint?: id|name (default: every joint) → joints: [{id, name, type, suppressed, visible, flip, axis (a slider's slide axis: x|y|z), offset (mm), angle (deg), values: as joint.list \
          gives them, dofs, expressions?: {offset?, angle?, values?}, a, b: {occurrence, occurrence_name, component, component_name, path \
          (occurrence names from the top, `/` between), snap (as saved: type, pick, face, end, edge, corner, x, point, z, in the component's \
          coordinates), references: [{role: face|end|x|edge|corner, name, role_in_feature?: (top, side:c1…), feature?: {id, name, type} (the feature that made the face; \
@@ -1141,6 +1141,16 @@ fn kind_param(p: &Value, cmd: &str) -> Result<JointKind> {
         .ok_or_else(|| bad(cmd, "`type` must be rigid, revolute, slider, cylindrical, pin_slot, planar, ball, parallel, perpendicular, angle, point_on_plane, point_on_line or line_on_plane"))
 }
 
+/// A slider's `axis` (x, y or z of a's joint frame), refused for other joints.
+fn axis_param(p: &Value, kind: JointKind, cmd: &str) -> Result<Option<SlideAxis>> {
+    let Some(v) = p.get("axis") else { return Ok(None) };
+    let axis = v.as_str().and_then(SlideAxis::parse).ok_or_else(|| bad(cmd, "`axis` must be x, y or z"))?;
+    if kind != JointKind::Slider {
+        return Err(bad(cmd, "`axis` is a slider's slide axis: only a slider takes it"));
+    }
+    Ok(Some(axis))
+}
+
 fn new_joint_name(s: &Session, p: &Value, kind: JointKind) -> String {
     str_(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| {
         let label = match kind {
@@ -1168,6 +1178,7 @@ fn new_joint_name(s: &Session, p: &Value, kind: JointKind) -> String {
 fn joint(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "joint.create";
     let kind = kind_param(p, cmd)?;
+    let axis = axis_param(p, kind, cmd)?.unwrap_or_default();
     let a = origin_param(s, p.get("a"), cmd)?;
     let b = origin_param(s, p.get("b"), cmd)?;
     let id = s.doc_mut().allocate_id()?;
@@ -1189,6 +1200,7 @@ fn joint(s: &mut Session, p: &Value) -> Result<Value> {
         values: values_param(s, p, kind, cmd)?,
         limits: limits_param(s, p, kind, cmd)?,
         flip: bool_(p, "flip").unwrap_or(false),
+        axis,
         offset,
         angle: angle.unwrap_or(0.0),
         suppressed: bool_(p, "suppressed").unwrap_or(false),
@@ -1237,6 +1249,7 @@ fn as_built(s: &mut Session, p: &Value) -> Result<Value> {
         values: vec![0.0; n],
         limits: limits_param(s, p, kind, cmd)?,
         flip: true, // as built: the origins coincide as they are, not mated
+        axis: Default::default(),
         offset: 0.0,
         angle: 0.0,
         suppressed: false,
@@ -1850,6 +1863,8 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
     let a = p.get("a").map(|v| origin_param(s, Some(v), cmd)).transpose()?;
     let b = p.get("b").map(|v| origin_param(s, Some(v), cmd)).transpose()?;
     let sides = a.is_some() || b.is_some();
+    let was = s.doc.assembly.joints.iter().find(|j| j.id == id).map_or(JointKind::Rigid, |j| j.kind);
+    let axis = axis_param(p, kind.unwrap_or(was), cmd)?;
     if sides {
         let j = s.doc.assembly.joints.iter().find(|j| j.id == id).ok_or_else(|| bad(cmd, "joint"))?;
         check_sides(a.as_ref().unwrap_or(&j.a), b.as_ref().unwrap_or(&j.b), cmd)?;
@@ -1886,6 +1901,12 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if let Some(f) = bool_(p, "flip") {
         j.flip = f;
+    }
+    if j.kind != JointKind::Slider {
+        j.axis = SlideAxis::Z;
+    }
+    if let Some(x) = axis {
+        j.axis = x;
     }
     if let Some(n) = str_(p, "name").map(str::trim).filter(|n| !n.is_empty() && n.len() <= 128) {
         j.name = n.to_string();
@@ -1986,7 +2007,7 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
             let named = named_values(j, vals.get(&j.id).map(Vec::as_slice).unwrap_or_default());
             let world = |o: &JointOrigin| s.doc.origin_world(&st, o).ok().map(|m| json!({"origin": [m[3][0], m[3][1], m[3][2]], "z": [m[2][0], m[2][1], m[2][2]]}));
             let mut out = json!({"id": j.id, "name": j.name, "type": j.kind, "a": j.a.occurrence, "b": j.b.occurrence, "values": named,
-                "flip": j.flip, "offset": j.offset, "suppressed": j.suppressed, "visible": s.joint_visible(j.id), "frame_a": world(&j.a), "frame_b": world(&j.b)});
+                "flip": j.flip, "axis": j.axis, "offset": j.offset, "suppressed": j.suppressed, "visible": s.joint_visible(j.id), "frame_a": world(&j.a), "frame_b": world(&j.b)});
             if !j.exprs.is_empty() {
                 out["expressions"] = json!(j.exprs);
             }

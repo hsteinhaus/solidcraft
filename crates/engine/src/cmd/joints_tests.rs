@@ -191,6 +191,58 @@ fn slider_limits_clamp() {
     assert!(near(place(&s, "B", Vec3::new(25.0, 5.0, 0.0)), Vec3::new(5.0, 5.0, 19.0)), "{:?}", place(&s, "B", Vec3::new(25.0, 5.0, 0.0)));
 }
 
+/// A slider's `axis` is the axis of a's joint frame it slides along (Fusion's X/Y/Z); z is the
+/// default and is not written. Limits clamp along it, it is reported, saved, and kept by undo.
+#[test]
+fn slider_slides_along_its_axis() {
+    let b0 = Vec3::new(25.0, 5.0, 0.0);
+    let seat = Vec3::new(5.0, 5.0, 10.0);
+    for (axis, dir) in [(Some("x"), Vec3::X), (Some("y"), Vec3::Y), (None, Vec3::Z)] {
+        let mut s = two_cubes();
+        let mut p = json!({"type": "slider", "a": {"face": [5, 5, 10], "x": [1, 0, 0]}, "b": {"face": [25, 5, 0], "x": [1, 0, 0]}, "limits": [[0, 4]], "name": "Rail"});
+        if let Some(a) = axis {
+            p["axis"] = json!(a);
+        }
+        run(&mut s, "joint.create", p);
+        assert!(near(place(&s, "B", b0), seat), "{axis:?}: {:?}", place(&s, "B", b0));
+        run(&mut s, "joint.drive", json!({"joint": "Rail", "value": 3}));
+        assert!(near(place(&s, "B", b0), seat + dir * 3.0), "{axis:?}: {:?}", place(&s, "B", b0));
+        run(&mut s, "joint.drive", json!({"joint": "Rail", "value": 10}));
+        assert!(near(place(&s, "B", b0), seat + dir * 4.0), "{axis:?}: {:?}", place(&s, "B", b0));
+        let name = axis.unwrap_or("z");
+        assert_eq!(run(&mut s, "joint.list", json!({}))["joints"][0]["axis"], json!(name));
+        assert_eq!(run(&mut s, "joint.inspect", json!({"joint": "Rail"}))["joints"][0]["axis"], json!(name));
+        let saved = s.doc.to_json();
+        assert_eq!(saved.contains("\"axis\""), axis.is_some(), "{axis:?}");
+        let doc = solidcraft_doc::Document::from_json(&saved).unwrap();
+        assert_eq!(doc.assembly.joints, s.doc.assembly.joints);
+        *s.doc_mut() = doc;
+        run(&mut s, "joint.solve", json!({}));
+        assert!(near(place(&s, "B", b0), seat + dir * 4.0), "{axis:?} reopened: {:?}", place(&s, "B", b0));
+        run(&mut s, "edit.undo", json!({}));
+        run(&mut s, "joint.drive", json!({"joint": "Rail", "value": 1}));
+        assert!(near(place(&s, "B", b0), seat + dir), "{axis:?} after undo: {:?}", place(&s, "B", b0));
+    }
+}
+
+/// joint.edit changes a slider's axis; `axis` means nothing for other joints and is refused.
+#[test]
+fn slider_axis_is_edited_and_refused_elsewhere() {
+    let mut s = two_cubes();
+    let p = json!({"type": "slider", "a": {"face": [5, 5, 10], "x": [1, 0, 0]}, "b": {"face": [25, 5, 0], "x": [1, 0, 0]}, "values": [2], "name": "Rail"});
+    run(&mut s, "joint.create", p);
+    run(&mut s, "joint.edit", json!({"joint": "Rail", "axis": "x"}));
+    let b0 = Vec3::new(25.0, 5.0, 0.0);
+    assert!(near(place(&s, "B", b0), Vec3::new(7.0, 5.0, 10.0)), "{:?}", place(&s, "B", b0));
+    assert!(s.execute("joint.edit", &json!({"joint": "Rail", "axis": "w"})).is_err());
+    assert!(s.execute("joint.edit", &json!({"joint": "Rail", "type": "revolute", "axis": "y"})).is_err());
+    // Turned into another type, the slide axis goes back to z.
+    run(&mut s, "joint.edit", json!({"joint": "Rail", "type": "revolute"}));
+    assert_eq!(run(&mut s, "joint.list", json!({}))["joints"][0]["axis"], json!("z"));
+    let r = s.execute("joint.create", &json!({"type": "revolute", "axis": "x", "a": {"face": [5, 5, 10]}, "b": {"face": [25, 5, 10]}}));
+    assert!(r.is_err_and(|e| e.to_string().contains("axis")));
+}
+
 #[test]
 fn rigid_cycles_solve_and_conflicts_report() {
     let mut s = two_cubes();

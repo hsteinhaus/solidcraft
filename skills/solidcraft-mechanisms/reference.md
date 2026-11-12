@@ -28,13 +28,13 @@ Each of `a` and `b` in `joint.create` is one of these:
 |---|---|---|
 | `rigid` | none | |
 | `revolute` | angle | deg |
-| `slider` | distance along z | mm |
+| `slider` | distance along z (or `axis`: x, y or z of a's frame) | mm |
 | `cylindrical` | angle, distance | deg, mm |
 | `pin_slot` | angle, slide | deg, mm |
 | `planar` | x, y, angle | mm, mm, deg |
 | `ball` | yaw, pitch, roll | deg |
 
-A slider's value grows as b moves along +z of its origin. Give its two origins the same point, so 0 is the position as modelled.
+A slider's value grows as b moves along +z of its origin (`axis: "x"|"y"` slides along that axis of a's frame instead, as Fusion's joint direction). Give its two origins the same point, so 0 is the position as modelled.
 
 ## Commands
 

@@ -562,7 +562,8 @@ fn setup(doc: &Document, st: &ModelState, l: &MotionLink, c: &Cam) -> Result<Set
         mat_mul(&mat_mul(&world(doc, fol.b.occurrence), &gb), &inv(&flip_of(fol))?)
     };
     let to_c = mat_mul(&c_inv, &guide);
-    let (g, d) = (apply_point(&to_c, Vec3::ZERO), apply_vector(&to_c, Vec3::Z));
+    // A slider travels along its axis of the guide frame (A's frame, or B's taken back by flip).
+    let (g, d) = (apply_point(&to_c, Vec3::ZERO), apply_vector(&to_c, if fol.kind == JointKind::Slider { fol.axis.dir() } else { Vec3::Z }));
     let (moving, sign_f) = if moves_b { (fol.b.occurrence, 1.0) } else { (fol.a.occurrence, -1.0) };
     let (radius, flat) = match &c.follower {
         Follower::Knife => (0.0, false),
@@ -940,6 +941,7 @@ mod tests {
             values: Vec::new(),
             limits: Vec::new(),
             flip: false,
+            axis: Default::default(),
             offset: 0.0,
             angle: 0.0,
             suppressed: false,
