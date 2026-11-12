@@ -79,6 +79,7 @@ pub(crate) fn fixes() -> UpstreamFixes {
     f.boolean_vertices_on_seams = true;
     f.fillet_removal_continues_analytic_faces = true;
     f.fillet_trace_points_in_their_edges_period = true;
+    f.fillet_concave_cliff_overflow = true;
     f.fillet_vertex_error_diagnostics = true;
     f.fillet_corner_ball_patch = true;
     f.fillet_chamfer_cone_on_arc = true;
