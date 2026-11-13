@@ -218,6 +218,7 @@ fn same_feature(a: &Feature, b: &Feature) -> bool {
         kernel_piece_order,
         inserted,
         link_frames,
+        link_placement_frames,
         link_faces,
         profile_frame,
         kind,
@@ -237,6 +238,7 @@ fn same_feature(a: &Feature, b: &Feature) -> bool {
         && *kernel_piece_order == b.kernel_piece_order
         && *inserted == b.inserted
         && *link_frames == b.link_frames
+        && *link_placement_frames == b.link_placement_frames
         && *link_faces == b.link_faces
         && *profile_frame == b.profile_frame
         && match (kind, &b.kind) {

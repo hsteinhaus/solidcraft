@@ -14,10 +14,11 @@ pub struct EditParams {
     #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<usize>")]
     pub restore_marker: Option<Option<usize>>,
-    /// Set the sketch's pinned link frames in place: by source component (id or name), a rigid
-    /// row-major matrix (as occurrence.move's `matrix`) taking that component's coordinates into
-    /// the sketch's, as the sketch was made; its links read the source through it, not the
-    /// placements now. `{}` clears them.
+    /// Set the sketch's pinned link frames in place: by source component (id or name) or
+    /// placement (occurrence names or ids from the root joined by `/`), a rigid row-major matrix
+    /// (as occurrence.move's `matrix`) taking that component's coordinates into the sketch's, as
+    /// the sketch was made; its links read the source through it, not the placements now. `{}`
+    /// clears them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_frames: Option<std::collections::BTreeMap<String, serde_json::Value>>,
 }

@@ -43,7 +43,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.create", "Create Sketch", create_sketch)
         .at("SOLID", "CREATE")
         .icon("sketch")
-        .params("plane: XY|XZ|YZ (sketch x, y along world +X, +Y on XY; +X, -Z on XZ; +Y, +Z on YZ) | construction plane name or id | {origin?: [x,y,z] numbers in mm, default [0,0,0] (not an expression), x_dir, y_dir} (in world coordinates unless frame says otherwise; a named plane is the active component's own) | {face: [world x,y,z], body?: exact world body, index?: face index, path?: complete occurrence ids, fixed?: bool}; new face attachments require a unique certified source (a flat face of a sheet metal body attaches to its panel instead, in the flat pattern's coordinates), fixed:true explicitly freezes the selected plane; offset?: expr, flip?: bool | \"x\" | \"y\" (not on a face: sketch the plane from its other side, so the normal and the default extrude direction are reversed; a half turn about the plane's own x or y axis, true picks the one keeping the sketch's y axis upward; offset still moves along the unflipped normal), frame?: world (default) | component (which coordinates an explicit plane is in; the reply's `frame` says which, with a `note` when the active component is moved or turned), project_edges?: bool, activate_part?: bool (default false; on a face of a body of another component than the active one: activate that component at the picked placement first, as component.activate would, and make the sketch there; it stays active afterwards and the reply's `activated` names it), name?; link_frames?: {component id|name: rigid matrix, row-major as occurrence.move matrix} (each source component's geometry read by the sketch's links through it, the sketch's component from the source's as made, not through the placements now; also set in place by sketch.edit)"),
+        .params("plane: XY|XZ|YZ (sketch x, y along world +X, +Y on XY; +X, -Z on XZ; +Y, +Z on YZ) | construction plane name or id | {origin?: [x,y,z] numbers in mm, default [0,0,0] (not an expression), x_dir, y_dir} (in world coordinates unless frame says otherwise; a named plane is the active component's own) | {face: [world x,y,z], body?: exact world body, index?: face index, path?: complete occurrence ids, fixed?: bool}; new face attachments require a unique certified source (a flat face of a sheet metal body attaches to its panel instead, in the flat pattern's coordinates), fixed:true explicitly freezes the selected plane; offset?: expr, flip?: bool | \"x\" | \"y\" (not on a face: sketch the plane from its other side, so the normal and the default extrude direction are reversed; a half turn about the plane's own x or y axis, true picks the one keeping the sketch's y axis upward; offset still moves along the unflipped normal), frame?: world (default) | component (which coordinates an explicit plane is in; the reply's `frame` says which, with a `note` when the active component is moved or turned), project_edges?: bool, activate_part?: bool (default false; on a face of a body of another component than the active one: activate that component at the picked placement first, as component.activate would, and make the sketch there; it stays active afterwards and the reply's `activated` names it), name?; link_frames?: {component id|name, or placement path (occurrence names or ids from the root joined by `/`, as joint.inspect's `path`, e.g. \"Asm:1/Part:2\"): rigid matrix, row-major as occurrence.move matrix} (each source component's or placement's geometry read by the sketch's links through it, the sketch's component from the source's as made, not through the placements now; a placement's pin also holds the placements below it; also set in place by sketch.edit)"),
     CommandSpec::new("sketch.edit", "Edit Sketch", crate::checked!("sketch.edit", edit_sketch))
         .noundo().icon("sketch")
         .contract(&EDIT_CONTRACT).output(output_schema_for::<EditResult>)
@@ -835,23 +835,43 @@ pub(super) fn face_contains(m: &solidcraft_geom::Mesh, tris: &[usize], p: Vec3, 
     })
 }
 
-/// `link_frames`: by source component (id or name), the frame its geometry is read through by
-/// the sketch's links, pinned (row-major rigid matrix, as occurrence.move's `matrix`: the sketch's
-/// component from the source's). `None` when not given.
-fn link_frames(s: &Session, p: &Value, cmd: &str) -> Result<Option<std::collections::BTreeMap<u64, solidcraft_doc::Mat>>> {
+/// Pinned link frames: by source component, and by single placement (occurrence path ids).
+type LinkFrames = (std::collections::BTreeMap<u64, solidcraft_doc::Mat>, Vec<(Vec<u64>, solidcraft_doc::Mat)>);
+
+/// `link_frames`: by source component (id or name) or single placement (occurrence names, or
+/// ids, from the root joined by `/`, as joint.inspect's `path`), the frame its geometry is read
+/// through by the sketch's links, pinned (row-major rigid matrix, as occurrence.move's `matrix`:
+/// the sketch's component from the source's). `None` when not given.
+fn link_frames(s: &Session, p: &Value, cmd: &str) -> Result<Option<LinkFrames>> {
     use super::component::matrix;
-    match p.get("link_frames") {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Object(frames)) => frames
-            .iter()
-            .map(|(key, m)| {
-                let c = s.doc.find_component(key).ok_or_else(|| bad(cmd, format!("`link_frames`: no component `{key}`")))?;
-                Ok((c, matrix::rigid(m, matrix::TOLERANCE, cmd)?))
-            })
-            .collect::<Result<_>>()
-            .map(Some),
-        Some(_) => Err(bad(cmd, "`link_frames` must map components to matrices")),
+    let Some(frames) = p.get("link_frames").filter(|v| !v.is_null()) else { return Ok(None) };
+    let Value::Object(frames) = frames else { return Err(bad(cmd, "`link_frames` must map components or placements to matrices")) };
+    let (mut components, mut placements) = (std::collections::BTreeMap::new(), Vec::new());
+    for (key, m) in frames {
+        let m = matrix::rigid(m, matrix::TOLERANCE, cmd)?;
+        if let Some(c) = s.doc.find_component(key) {
+            components.insert(c, m);
+            continue;
+        }
+        let path = placement_path(s, key).ok_or_else(|| bad(cmd, format!("`link_frames`: no component or placement `{key}`")))?;
+        placements.retain(|(p, _)| *p != path);
+        placements.push((path, m));
     }
+    placements.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(Some((components, placements)))
+}
+
+/// The occurrence ids of the placement `key` names: occurrence names (or ids) from the root,
+/// joined by `/`.
+fn placement_path(s: &Session, key: &str) -> Option<Vec<u64>> {
+    let (mut path, mut c) = (Vec::new(), 0);
+    for part in key.split('/') {
+        let under = || s.doc.occurrences.iter().filter(|o| o.parent == c);
+        let o = under().find(|o| o.name == part).or_else(|| under().find(|o| part.parse() == Ok(o.id)))?;
+        path.push(o.id);
+        c = o.component;
+    }
+    Some(path)
 }
 
 fn create_sketch(s: &mut Session, p: &Value) -> Result<Value> {
@@ -953,12 +973,13 @@ pub(super) fn create_sketch_with_plane(s: &mut Session, p: &Value, plane: PlaneR
     if !face::is_face(p) {
         super::component::to_active_frame(s, &mut kind);
     }
-    let frames = link_frames(s, p, "sketch.create")?.unwrap_or_default();
+    let (frames, placement_frames) = link_frames(s, p, "sketch.create")?.unwrap_or_default();
     let id = s.doc_mut().add_feature(kind, name)?;
     let comp = s.active_component;
     if let Some(f) = s.doc_mut().feature_mut(id) {
         f.component = comp;
         f.link_frames = frames;
+        f.link_placement_frames = placement_frames;
     }
     s.active_sketch = Some(id);
     s.sketch_entry = Some(SketchEntry { sketch: id, ..before });
@@ -1012,10 +1033,11 @@ fn edit_sketch(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("sketch.edit", format!("`{key}` is not a sketch")));
     }
     let (id, name, component) = (f.id, f.name.clone(), f.component);
-    if let Some(frames) = link_frames(s, p, "sketch.edit")?
+    if let Some((frames, placement_frames)) = link_frames(s, p, "sketch.edit")?
         && let Some(f) = s.doc_mut().feature_mut(id)
     {
         f.link_frames = frames;
+        f.link_placement_frames = placement_frames;
     }
     let Some(f) = s.doc.feature(id) else { return Err(bad("sketch.edit", format!("no sketch `{key}`"))) };
     let authored_path = match &f.kind {

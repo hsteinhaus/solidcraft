@@ -3059,6 +3059,11 @@ pub struct Feature {
     /// instead of the placements now. Edits of the sources are still followed.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub link_frames: std::collections::BTreeMap<u64, crate::Mat>,
+    /// As `link_frames`, by single placement (its occurrence path from the root): that
+    /// placement's frame, the sketch's component from the placement's, as made. Placements
+    /// below it are read through it too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub link_placement_frames: Vec<(Vec<u64>, crate::Mat)>,
     /// What a join of this feature makes of pieces that share no face: those that touch along an
     /// edge or at a point become separate bodies and those that touch nothing stay one body (the
     /// default), or every piece stays one body.
@@ -4253,6 +4258,7 @@ impl Document {
             inserted: false,
             link_faces: Vec::new(),
             link_frames: std::collections::BTreeMap::new(),
+            link_placement_frames: Vec::new(),
             touching: Touching::Separate,
             profile_frame: None,
             kind,

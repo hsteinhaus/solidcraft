@@ -155,6 +155,54 @@ fn a_sketchs_pinned_link_frame_keeps_its_projections_where_they_were_made() {
     assert!((q.x - 8.0).abs() < 1e-9 && q.y.abs() < 1e-9, "reopened: {q:?}");
 }
 
+/// A sketch can pin one placement's frame (`link_frames` keyed by its occurrence path, as
+/// joint.inspect prints it): a face projected from a component's second placement stays where
+/// it was made when that placement moves, while the unpinned first placement's projection
+/// follows its move; the pin is kept on reopen.
+#[test]
+fn a_sketchs_pinned_placement_frame_keeps_that_placements_projections() {
+    let mut s = Session::default();
+    let part = run(&mut s, "component.create", json!({"name":"Part","grounded":false}));
+    run(&mut s, "solid.box", json!({"length":20,"width":20,"height":10,"body_name":"Block"}));
+    run(&mut s, "component.activate", json!({"component":0}));
+    run(&mut s, "occurrence.copy", json!({"component":part["component"],"translate":[50,0,0]}));
+    let first = part["occurrence"].as_u64().unwrap();
+    let copy = s.doc.occurrences.iter().find(|o| o.component == part["component"].as_u64().unwrap() && o.id != first).unwrap().id;
+    run(&mut s, "component.create", json!({"name":"Dst","grounded":false}));
+    let pin = json!({"Part:2":[[1,0,0,50],[0,1,0,0],[0,0,1,0]]});
+    let id = run(&mut s, "sketch.create", json!({"plane":"XY","offset":10,"name":"T","link_frames":pin}))["sketch"].as_u64().unwrap();
+    let refs = json!([{"body":"Block","face":[10,10,10]},{"body":"Block (Part:2)","face":[60,10,10]}]);
+    let projected = run(&mut s, "sketch.project", json!({"refs":refs}));
+    assert_eq!(projected["links"].as_array().map(Vec::len), Some(2), "{projected}");
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "component.activate", json!({"component":0}));
+    run(&mut s, "occurrence.move", json!({"occurrence":copy,"translate":[0,15,0],"capture":true}));
+    run(&mut s, "occurrence.move", json!({"occurrence":first,"translate":[0,30,0],"capture":true}));
+    // Each link's points: (body read, x from, y from), 20 mm squares.
+    let check = |s: &Session, what: &str| {
+        let state = s.model.state();
+        let ss = state.sketch(id).unwrap();
+        let sk = &ss.sketch;
+        for (body, x, y) in [("Block", 0.0, 30.0), ("Block (Part:2)", 50.0, 0.0)] {
+            let l = sk.links.iter().find(|l| l.source.bodies() == [body]).unwrap_or_else(|| panic!("{what}: no link to {body}"));
+            assert!(!l.lost, "{what}: {l:?}");
+            let points: Vec<_> = sk.link_points(&l.id).into_iter().filter_map(|p| sk.points.get(p)).map(|p| ss.plane.to_world(p.pos)).collect();
+            assert!(!points.is_empty());
+            assert!(points.iter().all(|p| p.x > x - 0.1 && p.x < x + 20.1 && p.y > y - 0.1 && p.y < y + 20.1), "{what}, {body}: {points:?}");
+        }
+    };
+    check(&s, "moved");
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    check(&reopened, "reopened");
+    // Cleared on sketch.edit, the copy's projection follows its placement again.
+    run(&mut s, "sketch.edit", json!({"sketch":"T","link_frames":{}}));
+    run(&mut s, "sketch.finish", json!({}));
+    let state = s.model.state();
+    let ss = state.sketch(id).unwrap();
+    let l = ss.sketch.links.iter().find(|l| l.source.bodies() == ["Block (Part:2)"]).unwrap();
+    assert!(ss.sketch.link_points(&l.id).into_iter().filter_map(|p| ss.sketch.points.get(p)).all(|p| ss.plane.to_world(p.pos).y > 14.9));
+}
+
 #[test]
 fn a_profile_without_a_body_transfer_keeps_its_live_component_frame() {
     let mut s = Session::default();
