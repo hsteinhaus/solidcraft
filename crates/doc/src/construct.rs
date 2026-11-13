@@ -38,11 +38,15 @@ pub enum GeoRef {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
-    /// A body face: the one named `name`, else the one at `at`.
+    /// A body face: the one named `name`, else the one at `at`. `body` is the body it was picked
+    /// on (`Block (Part:2)`): the placements of a component share their face names, so it tells
+    /// them apart where `at` no longer does (the placement moved).
     Face {
         at: Vec3,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<String>,
     },
     /// A plane (origin, construction, offset…).
     Plane { plane: PlaneRef },
@@ -149,12 +153,12 @@ fn construct<'a>(st: &'a ModelState, name: &str) -> Result<&'a ConstructGeom> {
 
 /// The face picked: (body, face index, point on it). A face picked with a name is the face the
 /// name finds, or the reference fails, asking for it to be picked again.
-fn face_of<'a>(st: &'a ModelState, at: Vec3, name: &Option<String>) -> Result<(&'a ModelBody, usize, Vec3)> {
+fn face_of<'a>(st: &'a ModelState, at: Vec3, name: &Option<String>, body: &Option<String>) -> Result<(&'a ModelBody, usize, Vec3)> {
     // The named face itself: its nearest point to the old pick can lie on an edge it shares
     // (a corner round that a parameter moved away from the pick), where picking again by the
     // point finds the flat face beside it (#1255).
     if let Some(n) = name.as_deref() {
-        return crate::name_lookup::locate_face(st, n, at)
+        return crate::name_lookup::locate_face_on_body(st, body.as_deref(), n, at)
             .and_then(|hit| st.bodies.get(hit.body).filter(|b| !b.body.is_mesh() && hit.face < b.body.face_count()).map(|b| (b, hit.face, hit.point)))
             .ok_or_else(|| DocError::reselect(n));
     }
@@ -361,8 +365,8 @@ fn model_line(st: &ModelState, g: &GeoRef) -> Result<(Vec3, Vec3)> {
             let (b, i, pts) = edge_pick(st, *at, name)?;
             as_line(&pts).or_else(|| edge_circle(b, i, &pts)).ok_or_else(|| bad("the edge is neither straight nor circular"))
         }
-        GeoRef::Face { at, name } => {
-            let (b, fi, _) = face_of(st, *at, name)?;
+        GeoRef::Face { at, name, body } => {
+            let (b, fi, _) = face_of(st, *at, name, body)?;
             match kernel::face_surface(&b.body, fi) {
                 Some(FaceSurface::Cylinder { origin, axis, .. }) => Ok((origin, *axis)),
                 Some(FaceSurface::Cone { apex, axis, .. }) => Ok((apex, *axis)),
@@ -427,8 +431,8 @@ pub(crate) fn line(ctx: &Ctx, g: &GeoRef) -> Result<(Vec3, Vec3)> {
 pub(crate) fn plane(ctx: &Ctx, g: &GeoRef) -> Result<Plane> {
     match g {
         GeoRef::Plane { plane } => ctx.doc.resolve_plane_in(ctx.vals, plane, ctx.depth + 1, Some(ctx.st)),
-        GeoRef::Face { at, name } => {
-            let (b, fi, q) = face_of(ctx.st, *at, name)?;
+        GeoRef::Face { at, name, body } => {
+            let (b, fi, q) = face_of(ctx.st, *at, name, body)?;
             match kernel::face_surface(&b.body, fi) {
                 Some(FaceSurface::Plane { normal, point }) => {
                     let o = q - normal * (q - point).dot(normal);
@@ -452,8 +456,8 @@ fn centre(ctx: &Ctx, g: &GeoRef) -> Result<Vec3> {
             let pts = sketch_curve_points(ctx, *sketch, curve)?;
             as_circle(&pts).map(|(c, _, _)| c).ok_or_else(|| bad(format!("sketch curve `{curve}` is not a circle or arc")))
         }
-        GeoRef::Face { at, name } => {
-            let (b, fi, _) = face_of(ctx.st, *at, name)?;
+        GeoRef::Face { at, name, body } => {
+            let (b, fi, _) = face_of(ctx.st, *at, name, body)?;
             match kernel::face_surface(&b.body, fi) {
                 Some(FaceSurface::Sphere { center, .. }) | Some(FaceSurface::Torus { center, .. }) => Ok(center),
                 _ => Err(bad("the face is not a sphere or torus")),
@@ -602,8 +606,8 @@ fn facing(s: FaceSurface, at: Vec3, towards: Vec3, angle: f64) -> Result<Vec3> {
 
 fn face_surface_at(ctx: &Ctx, g: &GeoRef) -> Result<(FaceSurface, Vec3)> {
     match g {
-        GeoRef::Face { at, name } => {
-            let (b, fi, q) = face_of(ctx.st, *at, name)?;
+        GeoRef::Face { at, name, body } => {
+            let (b, fi, q) = face_of(ctx.st, *at, name, body)?;
             kernel::face_surface(&b.body, fi).map(|s| (s, q)).ok_or_else(|| bad("the face's surface is not a plane, cylinder, cone, sphere or torus"))
         }
         GeoRef::Plane { .. } => {
@@ -649,7 +653,9 @@ pub(crate) fn source_bodies(ctx: &Ctx, refs: &[&GeoRef]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for g in refs {
         let found: Vec<String> = match g {
-            GeoRef::Face { at, name } => face_of(ctx.st, *at, name).map(|(b, ..)| vec![b.definition_name().to_string()]).unwrap_or_default(),
+            GeoRef::Face { at, name, body } => {
+                face_of(ctx.st, *at, name, body).map(|(b, ..)| vec![b.definition_name().to_string()]).unwrap_or_default()
+            }
             GeoRef::Edge { at, name } => edge_pick(ctx.st, *at, name).map(|(b, ..)| vec![b.definition_name().to_string()]).unwrap_or_default(),
             GeoRef::Vertex { .. } => {
                 point(ctx, g).ok().and_then(|p| vertex_body(ctx.st, p)).map(|b| vec![b.definition_name().to_string()]).unwrap_or_default()
@@ -829,7 +835,7 @@ impl GeoRef {
                 };
                 edge_pick(st, on, &None).ok().map(|_| on)
             }
-            GeoRef::Face { at, name } => face_of(st, *at, name).ok().map(|(_, _, p)| p),
+            GeoRef::Face { at, name, body } => face_of(st, *at, name, body).ok().map(|(_, _, p)| p),
             _ => None,
         }
     }
@@ -848,7 +854,7 @@ impl GeoRef {
     /// edges that meet there (only those still missing them).
     pub fn name_picks(&mut self, st: &ModelState) {
         match self {
-            GeoRef::Face { at, name: name @ None } => {
+            GeoRef::Face { at, name: name @ None, .. } => {
                 *name = crate::naming::face_names_at(st, &[*at]).into_iter().next().filter(|n| !n.is_empty());
             }
             GeoRef::Edge { at, name: name @ None } => {

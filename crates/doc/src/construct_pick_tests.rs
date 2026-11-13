@@ -12,9 +12,9 @@ fn a_bare_face_pick_is_the_face_the_point_lies_on() {
     let doc = Document::new("picks");
     let vals = BTreeMap::new();
     let ctx = Ctx { doc: &doc, vals: &vals, st: &st, depth: 0 };
-    let p = plane(&ctx, &GeoRef::Face { at: Vec3::new(10.0, 5.0, 5.0), name: None }).unwrap();
+    let p = plane(&ctx, &GeoRef::Face { at: Vec3::new(10.0, 5.0, 5.0), name: None, body: None }).unwrap();
     assert!(p.normal().x.abs() > 1.0 - 1e-9 && (p.origin - Vec3::new(10.0, 5.0, 5.0)).dot(p.normal()).abs() < 1e-9, "{p:?}");
     // A point on no face picks none, however near faces lie.
-    let e = plane(&ctx, &GeoRef::Face { at: Vec3::new(10.3, 5.0, 5.0), name: None }).unwrap_err();
+    let e = plane(&ctx, &GeoRef::Face { at: Vec3::new(10.3, 5.0, 5.0), name: None, body: None }).unwrap_err();
     assert!(e.to_string().contains("no face"), "{e}");
 }

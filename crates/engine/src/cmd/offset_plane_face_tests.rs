@@ -192,3 +192,30 @@ fn plane_at_angle_rejects_bad_face_picks_without_panicking() {
         assert_eq!(s.doc.features.len(), features, "{base}");
     }
 }
+
+/// A plane on faces of a further placement (`Block (Part:2)`) keeps those faces when that
+/// placement moves: the placements share their face names, so the body picked tells them apart,
+/// not where the face was picked (no placement's face lies there any more).
+#[test]
+fn a_midplane_on_a_moved_placements_faces_follows_that_placement() {
+    let mut s = Session::default();
+    let part = run(&mut s, "component.create", json!({"name": "Part", "grounded": false}));
+    run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 10, "body_name": "Block"}));
+    run(&mut s, "component.activate", json!({"component": 0}));
+    run(&mut s, "occurrence.copy", json!({"component": part["component"], "translate": [50, 0, 0]}));
+    let a = json!({"face": [60, 10, 10], "body": "Block (Part:2)"});
+    let b = json!({"face": [60, 10, 0], "body": "Block (Part:2)"});
+    run(&mut s, "construct.plane.midplane", json!({"a": a, "b": b, "name": "Mid"}));
+    assert!((plane(&s, "Mid").origin.z - 5.0).abs() < 1e-9);
+    let first = part["occurrence"].as_u64().unwrap();
+    let copy = s.doc.occurrences.iter().find(|o| o.component == part["component"].as_u64().unwrap() && o.id != first).unwrap().id;
+    run(&mut s, "occurrence.move", json!({"occurrence": copy, "translate": [0, 0, 30], "capture": true}));
+    let check = |s: &Session| {
+        let id = s.doc.find_feature("Mid").unwrap().id;
+        assert!(s.model.result(id).is_none_or(|r| r.error.is_none()), "{:?}", s.model.result(id));
+        let mid = plane(s, "Mid");
+        assert!((mid.origin.z - 35.0).abs() < 1e-9 && mid.origin.x > 49.0, "{mid:?}");
+    };
+    check(&s);
+    check(&Session::new(Document::from_json(&s.doc.to_json()).unwrap()));
+}

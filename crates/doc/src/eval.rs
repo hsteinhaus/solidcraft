@@ -1930,6 +1930,13 @@ fn placement_digest(doc: &Document, f: &Feature, st: Option<&ModelState>) -> u64
                 reads.link(doc, st, &link.source);
             }
         }
+        // Construction geometry on bodies finds them where they are placed now; in the root,
+        // through every placement (`construction_state`), a further placement's too.
+        FeatureKind::ConstructionPlane { plane } if !plane_reads_geometry(plane) => {}
+        FeatureKind::ConstructionPlane { .. } | FeatureKind::ConstructionAxis { .. } | FeatureKind::ConstructionPoint { .. } => {
+            reads.all = true;
+            reads.unlisted = f.component == 0 && !doc.occurrences.is_empty();
+        }
         _ => {}
     }
     if reads.is_empty() {

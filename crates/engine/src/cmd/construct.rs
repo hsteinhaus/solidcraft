@@ -258,8 +258,12 @@ pub(super) fn geo(s: &Session, v: Option<&Value>, cmd: &str, what: &str) -> Resu
         Ok(GeoForm::Saved(g)) => g,
         // A point where bodies meet lies on a face of each: `body` says whose face was picked.
         Ok(GeoForm::Face(at)) => match str_(v, "body") {
-            Some(body) => GeoRef::Face { at, name: Some(body_face_name(&st, body, at).map_err(|e| bad(cmd, format!("`{what}`: {e}")))?) },
-            None => GeoRef::Face { at, name: None },
+            Some(body) => GeoRef::Face {
+                at,
+                name: Some(body_face_name(&st, body, at).map_err(|e| bad(cmd, format!("`{what}`: {e}")))?),
+                body: Some(body.to_string()),
+            },
+            None => GeoRef::Face { at, name: None, body: None },
         },
         Ok(GeoForm::Edge(at)) => GeoRef::Edge { at, name: None },
         Ok(GeoForm::Vertex(at)) => GeoRef::Vertex { at, edges: None },
