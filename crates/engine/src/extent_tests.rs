@@ -234,3 +234,62 @@ fn cut_to_the_far_side_of_a_curved_wall() {
     assert!((removed - want).abs() < want * 2e-2, "removed {removed}, want {want}");
     assert!(s.model.results.iter().all(|r| r.error.is_none()), "{:?}", s.model.results);
 }
+
+/// A sketch with point `p` at (10, ph) and circle `c` at (-10, 5) on the XZ plane (sketch y is
+/// world z), and a square profile `P` on XY below it.
+fn sketch_point_target() -> Session {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name": "ph", "expression": "20 mm"}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 0], "x_dir": [1, 0, 0], "y_dir": [0, 0, 1]}, "name": "S"}));
+    run(&mut s, "sketch.point", json!({"point": [10, 20], "id": "p"}));
+    run(&mut s, "sketch.dimension", json!({"entities": ["origin", "p"], "type": "horizontal", "value": "10 mm"}));
+    run(&mut s, "sketch.dimension", json!({"entities": ["origin", "p"], "type": "vertical", "value": "ph"}));
+    run(&mut s, "sketch.point", json!({"point": [5, 0], "id": "z"}));
+    run(&mut s, "sketch.circle.center", json!({"center": [-10, 5], "radius": 2, "id": "c"}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "P"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [-4, -4], "p1": [4, 4]}));
+    run(&mut s, "sketch.finish", json!({}));
+    s
+}
+
+/// To Object a sketch point (Fusion's To Entity on a SketchPoint): the extrude ends at the
+/// point's height and follows it when its sketch changes, also after a save and reopen.
+#[test]
+fn extrude_to_a_sketch_point_follows_the_point() {
+    let mut s = sketch_point_target();
+    s.param_check = crate::schema::ParamCheck::Strict;
+    run(&mut s, "solid.extrude", json!({"sketch": "P", "to": {"sketch": "S", "point": "p"}, "to_offset": 2, "body_name": "Post", "name": "E"}));
+    let top = |s: &mut Session| body(s, "Post")["bbox"]["max"][2].as_f64().unwrap();
+    assert!((top(&mut s) - 22.0).abs() < 1e-6, "{}", top(&mut s));
+    run(&mut s, "parameters.change", json!({"name": "ph", "expression": "30 mm"}));
+    assert!((top(&mut s) - 32.0).abs() < 1e-6, "{}", top(&mut s));
+    // Saved, it keeps the reference, not the point where it was.
+    let json = s.doc.to_json();
+    let saved: Value = serde_json::from_str(&json).unwrap();
+    let e = saved["features"].as_array().unwrap().iter().find(|f| f["name"] == "E").unwrap();
+    assert_eq!(e["extent"]["to"], json!({"sketch": s.doc.find_feature("S").unwrap().id, "point": "p"}), "{e}");
+    let mut cold = Session::new(solidcraft_doc::Document::from_json(&json).unwrap());
+    assert!((top(&mut cold) - 32.0).abs() < 1e-6, "{}", top(&mut cold));
+    run(&mut cold, "parameters.change", json!({"name": "ph", "expression": "40 mm"}));
+    assert!((top(&mut cold) - 42.0).abs() < 1e-6, "{}", top(&mut cold));
+    assert!(cold.model.results.iter().all(|r| r.error.is_none()), "{:?}", cold.model.results);
+    // The extrude depends on the sketch: deleting it takes the extrude or breaks it.
+    let deps = run(&mut cold, "timeline.dependents", json!({"feature": "S"}));
+    assert!(deps.to_string().contains("\"E\""), "{deps}");
+}
+
+/// A circle's centre is a sketch point too; a point on the profile's plane is where the
+/// extrude starts; an unknown sketch or point is refused.
+#[test]
+fn extrude_to_a_sketch_point_takes_a_centre_and_refuses_bad_points() {
+    let mut s = sketch_point_target();
+    run(&mut s, "solid.extrude", json!({"sketch": "P", "to": {"sketch": "S", "point": "c.center"}, "body_name": "Post"}));
+    let b = body(&mut s, "Post");
+    assert!((b["bbox"]["max"][2].as_f64().unwrap() - 5.0).abs() < 1e-6, "{b}");
+    let e = s.execute("solid.extrude", &json!({"sketch": "P", "to": {"sketch": "S", "point": "z"}})).unwrap_err().to_string();
+    assert!(e.contains("where the extrude starts"), "{e}");
+    for bad in [json!({"sketch": "S", "point": "nope"}), json!({"sketch": "Nope", "point": "p"}), json!({"sketch": "S"})] {
+        assert!(s.execute("solid.extrude", &json!({"sketch": "P", "to": bad})).is_err(), "{bad}");
+    }
+}
