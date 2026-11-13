@@ -1439,7 +1439,10 @@ fn tilted_circle(plane: &Plane, pts: &[Vec3]) -> Option<Vec<LinkGeom>> {
     let (c, n, r, closed) = circle3(pts)?;
     let sn = plane.normal();
     let cosang = n.dot(sn).abs();
-    if !(1e-9..=1.0 - 1e-12).contains(&cosang) {
+    if cosang < 1e-9 {
+        return edge_on(plane, pts, c, n, r, closed);
+    }
+    if cosang > 1.0 - 1e-12 {
         return None;
     }
     if closed {
@@ -1474,6 +1477,36 @@ fn tilted_circle(plane: &Plane, pts: &[Vec3]) -> Option<Vec<LinkGeom>> {
         out.push(LinkGeom::Conic { a: plane.to_local(at(t0)), apex: plane.to_local(apex), b: plane.to_local(at(t1)), rho });
     }
     Some(out)
+}
+
+/// A circle seen edge-on is a segment along its plane's line in the sketch: a full circle its
+/// diameter, an arc from the nearest to the farthest of its ends and the extremes it passes.
+fn edge_on(plane: &Plane, pts: &[Vec3], c: Vec3, n: Vec3, r: f64, closed: bool) -> Option<Vec<LinkGeom>> {
+    let d = n.cross(plane.normal()).normalized()?;
+    let (mut lo, mut hi) = (-r, r);
+    if !closed {
+        // The arc's turn from its first point (the polyline's direction), then where along d it reaches.
+        let p0 = *pts.first()?;
+        let e1 = (p0 - c).normalized()?;
+        let e2 = n.cross(e1);
+        let ang = |p: Vec3| (p - c).dot(e2).atan2((p - c).dot(e1));
+        let mut sweep = 0.0;
+        for w in pts.windows(2) {
+            sweep += (ang(w[1]) - ang(w[0]) + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+        }
+        let along = |t: f64| (e1 * t.cos() + e2 * t.sin()).dot(d) * r;
+        let (s0, s1) = (along(0.0), along(sweep));
+        (lo, hi) = (s0.min(s1), s0.max(s1));
+        // The turns at which the arc points along +d and -d, inside the sweep.
+        let t_max = d.dot(e2).atan2(d.dot(e1));
+        for (t, s) in [(t_max, r), (t_max + std::f64::consts::PI, -r)] {
+            let k = if sweep >= 0.0 { t.rem_euclid(std::f64::consts::TAU) } else { -(-t).rem_euclid(std::f64::consts::TAU) };
+            if k.abs() <= sweep.abs() {
+                (lo, hi) = (lo.min(s), hi.max(s));
+            }
+        }
+    }
+    Some(vec![LinkGeom::Line(plane.to_local(c + d * lo), plane.to_local(c + d * hi))])
 }
 
 /// A smooth chain that fitting broke into many short lines is better as one fit spline (a
