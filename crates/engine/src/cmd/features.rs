@@ -7,7 +7,7 @@ use solidcraft_doc::{
     Touching, expr::Kind, point_expr,
 };
 use solidcraft_doc::{BodyName, FeatureName, SketchId};
-use solidcraft_doc::{Dir, FacePick, Position};
+use solidcraft_doc::{Dir, ExtentTo, FacePick, Position};
 use solidcraft_geom::prelude::*;
 
 use super::{CommandSpec, not_in_sketch};
@@ -39,7 +39,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .key("E")
         .contract(&EXTRUDE_CONTRACT)
         .output(output_schema_for::<FeatureResult>)
-        .params("distance: expr (or through_all: true); taper?: angle expr (positive: outward, so the far end is larger along the extrusion direction; negative: inward, so the far end is smaller); corner?: preserve_curvature|tangent|round (how a taper closes a sharp corner its offset opens: each wall continues as itself, a line's plane or an arc's cone, until it meets its neighbour; each continues straight along its end tangent; or an arc about the corner. Without it, each profile preserves curvature where every curve is a line or an arc and takes tangent where another curve has a corner, and the feature's warning says so; a corner rule given is kept, and refused where the kernel cannot build it); sketch?: id|name (default: active or last sketch); profiles?: all | [index] | [{curves: [ids]}] (the profile whose outer loop is made of exactly these curves, or pieces of them; found again on every recompute, so it follows parameter changes; islands inside are its holes; an error when no profile or several match) | [{point:[x,y]}] (index and point picks are stored by their curves when that finds the same profile; a pick on a drawn profile that reference geometry, such as the projected outline of the face the sketch is on, cuts into regions takes the whole drawn profile); exact_regions?: bool (each index or point pick is exactly the region it names, as the dialogs send); default: every drawn profile, except that a loop inside another is its hole and a loop inside that hole is material again; face?: [x,y,z] (extrude a planar body face instead of a sketch profile); faces?: [[x,y,z],…] (coplanar faces of one body); face_body?: name (whose face, where faces of several bodies meet at the point); direction?: positive|negative|symmetric (distance is total thickness, split evenly around the start plane); convention?: total_distance|legacy_per_side (how a symmetric distance is read; default total_distance, split evenly around the start plane; legacy_per_side: the distance on each side, as older symmetric extrudes keep); distance2?: expr (Two Sides: a second distance on the side direction leaves free, the first side may be through_all or to; with direction: negative the first side goes against the normal and distance2 along it; a negative distance only turns its own side over); start_offset?: expr (along the sketch normal, also with direction: negative); to?: [x,y,z] (To Object: a face, vertex or point; to_offset?: expr past it); from?: [x,y,z] (From Object: start at that face or point); operation?: new|join|cut|intersect|auto (cut into a body, otherwise join existing solids; new in an empty component); touching?: separate|one_body (what a join makes of pieces that share no face: separate, the default, makes each piece that touches another only along an edge or at a point a body of its own and keeps pieces that touch nothing in one body; one_body keeps every piece in one body); targets?: [body] (Join from a face, or from a sketch on a body's face, defaults to that face's body; explicit targets or participants override); name?; body_name?; thin?: true (Thin: a wall along sketch curves instead of the profiles) with curves?: [curve ids] (open chains and closed loops, joined where they meet end to end; default: every drawn curve of the sketch), thickness: expr, side?: center|inside|outside|two_sides (a closed loop's inside is the area it encloses, an open chain's the side it bends toward, a straight line's the left of its first curve as drawn; default center), thickness2?: expr (two_sides: the thickness outside); corners are mitred, crossing walls are one; profile_frame?: rigid matrix, row-major as occurrence.move matrix (a profile of another component read through it, its component from the sketch's, as made, not through the placements now)"),
+        .params("distance: expr (or through_all: true); taper?: angle expr (positive: outward, so the far end is larger along the extrusion direction; negative: inward, so the far end is smaller); corner?: preserve_curvature|tangent|round (how a taper closes a sharp corner its offset opens: each wall continues as itself, a line's plane or an arc's cone, until it meets its neighbour; each continues straight along its end tangent; or an arc about the corner. Without it, each profile preserves curvature where every curve is a line or an arc and takes tangent where another curve has a corner, and the feature's warning says so; a corner rule given is kept, and refused where the kernel cannot build it); sketch?: id|name (default: active or last sketch); profiles?: all | [index] | [{curves: [ids]}] (the profile whose outer loop is made of exactly these curves, or pieces of them; found again on every recompute, so it follows parameter changes; islands inside are its holes; an error when no profile or several match) | [{point:[x,y]}] (index and point picks are stored by their curves when that finds the same profile; a pick on a drawn profile that reference geometry, such as the projected outline of the face the sketch is on, cuts into regions takes the whole drawn profile); exact_regions?: bool (each index or point pick is exactly the region it names, as the dialogs send); default: every drawn profile, except that a loop inside another is its hole and a loop inside that hole is material again; face?: [x,y,z] (extrude a planar body face instead of a sketch profile); faces?: [[x,y,z],…] (coplanar faces of one body); face_body?: name (whose face, where faces of several bodies meet at the point); direction?: positive|negative|symmetric (distance is total thickness, split evenly around the start plane); convention?: total_distance|legacy_per_side (how a symmetric distance is read; default total_distance, split evenly around the start plane; legacy_per_side: the distance on each side, as older symmetric extrudes keep); distance2?: expr (Two Sides: a second distance on the side direction leaves free, the first side may be through_all or to; with direction: negative the first side goes against the normal and distance2 along it; a negative distance only turns its own side over); start_offset?: expr (along the sketch normal, also with direction: negative); to?: [x,y,z] (To Object: a face, vertex or point) | {sketch: id|name, point: id} (a sketch point, `p7` or `c3.center`, followed when the sketch changes); to_offset?: expr past it; from?: [x,y,z] (From Object: start at that face or point); operation?: new|join|cut|intersect|auto (cut into a body, otherwise join existing solids; new in an empty component); touching?: separate|one_body (what a join makes of pieces that share no face: separate, the default, makes each piece that touches another only along an edge or at a point a body of its own and keeps pieces that touch nothing in one body; one_body keeps every piece in one body); targets?: [body] (Join from a face, or from a sketch on a body's face, defaults to that face's body; explicit targets or participants override); name?; body_name?; thin?: true (Thin: a wall along sketch curves instead of the profiles) with curves?: [curve ids] (open chains and closed loops, joined where they meet end to end; default: every drawn curve of the sketch), thickness: expr, side?: center|inside|outside|two_sides (a closed loop's inside is the area it encloses, an open chain's the side it bends toward, a straight line's the left of its first curve as drawn; default center), thickness2?: expr (two_sides: the thickness outside); corners are mitred, crossing walls are one; profile_frame?: rigid matrix, row-major as occurrence.move matrix (a profile of another component read through it, its component from the sketch's, as made, not through the placements now)"),
     CommandSpec::new("solid.revolve", "Revolve", revolve)
         .at("SOLID", "CREATE")
         .icon("revolve")
@@ -1235,10 +1235,12 @@ fn thin_regions(s: &Session, ss: &solidcraft_doc::SolvedSketch, thin: &ThinWall)
 /// side(s), a second distance, a start offset, a taper, and from an object.
 pub(super) fn extent_param(s: &Session, p: &Value, cmd: &str) -> Result<Extent> {
     let through_all = bool_(p, "through_all").unwrap_or(false) || str_(p, "extent").is_some_and(|e| e.eq_ignore_ascii_case("through_all"));
-    let to_object = p.get("to").is_some();
-    if to_object && p.get("to").and_then(vec3).is_none() {
-        return Err(bad(cmd, "`to` must be a point [x, y, z] on the face, vertex or point to extrude to"));
-    }
+    let to = match p.get("to") {
+        None => None,
+        Some(v) if v.get("sketch").is_some() => Some(to_sketch_point(s, v, cmd)?),
+        Some(v) => Some(ExtentTo::Pick(FacePick(vec3(v).ok_or_else(|| bad(cmd, format!("`to` {TO_POINT}")))?))),
+    };
+    let to_object = to.is_some();
     if p.get("from").is_some() && p.get("from").and_then(vec3).is_none() {
         return Err(bad(cmd, "`from` must be a point [x, y, z] on the face or point to start from"));
     }
@@ -1282,11 +1284,25 @@ pub(super) fn extent_param(s: &Session, p: &Value, cmd: &str) -> Result<Extent> 
         second_follows_first: false,
         taper,
         corner,
-        to: p.get("to").and_then(vec3).map(FacePick),
+        to,
         to_offset: expr(p, "to_offset"),
         from: p.get("from").and_then(vec3).map(FacePick),
         to_body_apart: false,
     })
+}
+
+/// What extrude's `to` takes.
+pub(crate) const TO_POINT: &str = "must be a point [x, y, z] on the face, vertex or point to extrude to, or a sketch point {sketch, point}";
+
+/// `to: {sketch, point}`: a point of a sketch (`p7`, `c3.center`), checked to resolve now.
+fn to_sketch_point(s: &Session, v: &Value, cmd: &str) -> Result<ExtentTo> {
+    let point = str_(v, "point").filter(|p| !p.is_empty());
+    let (Some(_), Some(point)) = (sketch_key(v.get("sketch")), point) else { return Err(bad(cmd, format!("`to` {TO_POINT}"))) };
+    let sketch = sketch_id(s, v.get("sketch"), cmd, "to.sketch")?;
+    if s.model.state().sketch(sketch).is_none_or(|ss| ss.sketch.resolve_point(point).is_none()) {
+        return Err(bad(cmd, format!("`to`: no point `{point}` in sketch {sketch}")));
+    }
+    Ok(ExtentTo::SketchPoint { sketch: SketchId(sketch), point: point.to_string() })
 }
 
 fn revolve(s: &mut Session, p: &Value) -> Result<Value> {

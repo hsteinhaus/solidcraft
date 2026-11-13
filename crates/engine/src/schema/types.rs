@@ -199,11 +199,50 @@ macro_rules! target_point {
     };
 }
 
-target_point!(
-    /// Extrude's `to`: a [`Point3`], with the handler's message.
-    ToPoint,
-    "must be a point [x, y, z] on the face, vertex or point to extrude to"
-);
+/// Extrude's `to`: a [`Point3`], or a sketch point `{sketch: id|name, point: id}`, with the
+/// handler's message.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ToPoint {
+    Point(Vec3),
+    SketchPoint { sketch: Value, point: String },
+}
+
+impl<'de> Deserialize<'de> for ToPoint {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = Value::deserialize(d)?;
+        let to = match (v.get("sketch"), v.get("point").and_then(Value::as_str)) {
+            (None, _) => params::vec3(&v).map(ToPoint::Point),
+            (Some(sketch @ (Value::Number(_) | Value::String(_))), Some(point)) if !point.is_empty() => {
+                Some(ToPoint::SketchPoint { sketch: sketch.clone(), point: point.into() })
+            }
+            _ => None,
+        };
+        to.ok_or_else(|| D::Error::custom(crate::cmd::TO_POINT))
+    }
+}
+
+impl JsonSchema for ToPoint {
+    fn schema_name() -> Cow<'static, str> {
+        "ToPoint".into()
+    }
+    fn inline_schema() -> bool {
+        true
+    }
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let point = generator.subschema_for::<Point3>();
+        json_schema!({
+            "anyOf": [
+                point,
+                {
+                    "description": "A sketch point: the sketch (an id or name) and the point's id (`p7`, `c3.center`).",
+                    "type": "object",
+                    "properties": {"sketch": {"type": ["integer", "string"]}, "point": {"type": "string", "minLength": 1}},
+                    "required": ["sketch", "point"]
+                }
+            ]
+        })
+    }
+}
 target_point!(
     /// Extrude's `from`: a [`Point3`], with the handler's message.
     FromPoint,

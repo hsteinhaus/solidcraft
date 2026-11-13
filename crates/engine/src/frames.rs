@@ -582,7 +582,9 @@ fn map_local(s: &Session, world: &solidcraft_doc::ModelState, id: &str, params: 
         }
         let points = match (&feature.kind, cmd) {
             (solidcraft_doc::FeatureKind::Revolve { to, .. }, "solid.revolve") => [("to", *to), ("from", None)],
-            (solidcraft_doc::FeatureKind::Extrude { extent, .. }, "solid.extrude") => [("to", extent.to), ("from", extent.from)],
+            (solidcraft_doc::FeatureKind::Extrude { extent, .. }, "solid.extrude") => {
+                [("to", extent.to.as_ref().and_then(solidcraft_doc::ExtentTo::pick)), ("from", extent.from)]
+            }
             _ => [("to", None), ("from", None)],
         };
         for (key, point) in points {

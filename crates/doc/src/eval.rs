@@ -5380,8 +5380,10 @@ fn feature_tools_with_constructor(
             let st: &ModelState = &shown;
             // The face names follow `face_points`: To, then From.
             let name = |k: usize| f.face_names.get(k).map(String::as_str);
-            let (to_name, from_name) = if extent.to.is_some() { (name(0), name(1)) } else { (None, name(0)) };
-            let to_face = extent.to.and_then(|p| object_face(&tst, to_name, p.0, Some(n)));
+            // A sketch point picks no face: it has no name.
+            let to_pick = extent.to.as_ref().and_then(crate::ExtentTo::pick);
+            let (to_name, from_name) = if to_pick.is_some() { (name(0), name(1)) } else { (None, name(0)) };
+            let to_face = to_pick.and_then(|p| object_face(&tst, to_name, p.0, Some(n)));
             // The body the extent runs to: a Join to it joins that body too (#6424), unless the
             // design was built before it did (#8151).
             *to_body = to_face.filter(|_| !extent.to_body_apart).and_then(|(bi, _)| tst.bodies.get(bi)).map(|b| b.name.clone());
@@ -5394,13 +5396,21 @@ fn feature_tools_with_constructor(
                 Some(p) => height_at(&tst, object_face(&tst, from_name, p.0, Some(n)), &ss.plane, centre, p.0),
                 None => 0.0,
             };
-            let d = match extent.to {
-                Some(p) => {
+            let d = match &extent.to {
+                Some(to) => {
                     let off = match &extent.to_offset {
                         Some(e) => val(vals, e, Kind::Length)?,
                         None => 0.0,
                     };
-                    let h = height_at(&tst, to_face, &ss.plane, centre, p.0);
+                    let h = match to {
+                        crate::ExtentTo::Pick(p) => height_at(&tst, to_face, &ss.plane, centre, p.0),
+                        crate::ExtentTo::SketchPoint { sketch, point } => {
+                            let lost = || DocError::Unknown(format!("To Object: point `{point}` of sketch {sketch}"));
+                            let ps = sketch_in_feature_frame(doc, tst.sketch(sketch.0).ok_or_else(lost)?, f.component)?;
+                            let q = ps.sketch.resolve_point(point).and_then(|i| ps.sketch.point(i)).ok_or_else(lost)?;
+                            (ps.plane.to_world(q) - ss.plane.origin).dot(n)
+                        }
+                    };
                     let start = from + extent.start_offset.as_deref().map(|e| val(vals, e, Kind::Length)).transpose()?.unwrap_or(0.0);
                     // Past the face by the offset, in the direction travelled.
                     let to = h + if h >= start { off } else { -off };

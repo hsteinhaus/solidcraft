@@ -347,9 +347,10 @@ pub struct Extent {
     /// feature's warning says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corner: Option<solidcraft_kernel::DraftCorner>,
-    /// To Object: end at the face (or vertex/point) at this point, instead of `distance`.
+    /// To Object: end at the face (or vertex/point) at this point, or at a sketch point,
+    /// instead of `distance`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub to: Option<FacePick>,
+    pub to: Option<ExtentTo>,
     /// Offset past the To Object face (expression; negative stops short).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[walk(length = "To offset")]
@@ -363,6 +364,26 @@ pub struct Extent {
     /// it set, so they keep the bodies they were built with.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub to_body_apart: bool,
+}
+
+/// An extrude's To Object: a face, vertex or point picked in the model (`[x, y, z]`), or a point
+/// of a sketch (`{sketch, point}`: `p7`, `c3.center`), found in the evaluated sketch so the
+/// extrude follows it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, solidcraft_derive::Walk)]
+#[serde(untagged)]
+pub enum ExtentTo {
+    Pick(FacePick),
+    SketchPoint { sketch: SketchId, point: String },
+}
+
+impl ExtentTo {
+    /// The point picked in the model, unless this is a sketch point.
+    pub fn pick(&self) -> Option<FacePick> {
+        match self {
+            ExtentTo::Pick(p) => Some(*p),
+            ExtentTo::SketchPoint { .. } => None,
+        }
+    }
 }
 
 /// Thin Extrude: a wall of constant thickness along sketch curves instead of the profiles.

@@ -4510,6 +4510,7 @@ fn to_object_point(inputs: &[SelInput]) -> Option<Value> {
 pub(crate) fn object_point(inputs: &[SelInput], label: &str) -> Option<Value> {
     inputs.iter().find(|i| i.label == label)?.items.first().and_then(|x| match x {
         Sel::Face { point, .. } | Sel::Vertex { point, .. } | Sel::Edge { point, .. } => Some(pt(*point)),
+        Sel::ExternalSketchPoint { sketch, id } => Some(json!({"sketch": sketch, "point": id})),
         _ => None,
     })
 }
@@ -6688,7 +6689,14 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             // Extent references belong to the extrude's authoring frame, including free
             // points. They are not body-local picks (a reference may be on another body).
             let frame = feature_frame(s, f.component);
-            for (label, point) in [(TO_OBJECT, extent.to), (FROM_OBJECT, extent.from)] {
+            // A sketch point To Object stays the sketch's point.
+            if let Some(solidcraft_engine::doc::ExtentTo::SketchPoint { sketch, point }) = &extent.to {
+                set_object(&mut d.inputs, &mut d.active, TO_OBJECT, true);
+                if let Some(input) = d.inputs.iter_mut().find(|i| i.label == TO_OBJECT) {
+                    input.items = vec![Sel::ExternalSketchPoint { sketch: sketch.0, id: point.clone() }];
+                }
+            }
+            for (label, point) in [(TO_OBJECT, extent.to.as_ref().and_then(|t| t.pick())), (FROM_OBJECT, extent.from)] {
                 if let Some(point) = point {
                     set_object(&mut d.inputs, &mut d.active, label, true);
                     if let Some(input) = d.inputs.iter_mut().find(|i| i.label == label) {
