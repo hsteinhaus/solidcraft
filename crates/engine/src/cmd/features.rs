@@ -802,8 +802,18 @@ fn add_feature_in(s: &mut Session, p: &Value, kind: FeatureKind, world: bool) ->
         }
         Some(m) => Some(super::component::matrix::rigid(m, super::component::matrix::TOLERANCE, UNKNOWN_COMMAND)?),
     };
+    // Construction geometry reads other components and placements through the frames pinned as
+    // it was made (`link_frames`, as on sketch.create), not the placements now.
+    let construction =
+        matches!(kind, FeatureKind::ConstructionPlane { .. } | FeatureKind::ConstructionAxis { .. } | FeatureKind::ConstructionPoint { .. });
+    let (link_frames, link_placement_frames) = match p.get("link_frames") {
+        Some(v) if !v.is_null() && !construction => return Err(bad(UNKNOWN_COMMAND, "`link_frames` is for sketches and construction geometry")),
+        _ => super::sketch::link_frames(s, p, UNKNOWN_COMMAND)?.unwrap_or_default(),
+    };
     let id = s.doc_mut().add_feature(kind, name)?;
     if let Some(f) = s.doc_mut().feature_mut(id) {
+        f.link_frames = link_frames;
+        f.link_placement_frames = link_placement_frames;
         f.profile_frame = profile_frame;
         f.participants = participants;
         f.touching = touching;

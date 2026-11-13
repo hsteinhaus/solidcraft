@@ -836,13 +836,13 @@ pub(super) fn face_contains(m: &solidcraft_geom::Mesh, tris: &[usize], p: Vec3, 
 }
 
 /// Pinned link frames: by source component, and by single placement (occurrence path ids).
-type LinkFrames = (std::collections::BTreeMap<u64, solidcraft_doc::Mat>, Vec<(Vec<u64>, solidcraft_doc::Mat)>);
+pub(super) type LinkFrames = (std::collections::BTreeMap<u64, solidcraft_doc::Mat>, Vec<(Vec<u64>, solidcraft_doc::Mat)>);
 
 /// `link_frames`: by source component (id or name) or single placement (occurrence names, or
 /// ids, from the root joined by `/`, as joint.inspect's `path`), the frame its geometry is read
 /// through by the sketch's links, pinned (row-major rigid matrix, as occurrence.move's `matrix`:
 /// the sketch's component from the source's). `None` when not given.
-fn link_frames(s: &Session, p: &Value, cmd: &str) -> Result<Option<LinkFrames>> {
+pub(super) fn link_frames(s: &Session, p: &Value, cmd: &str) -> Result<Option<LinkFrames>> {
     use super::component::matrix;
     let Some(frames) = p.get("link_frames").filter(|v| !v.is_null()) else { return Ok(None) };
     let Value::Object(frames) = frames else { return Err(bad(cmd, "`link_frames` must map components or placements to matrices")) };

@@ -7410,9 +7410,9 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
                 solidcraft_engine::doc::construct::GeoRef::SketchCurve { sketch, curve } => {
                     (crate::selection::curve_pick(curve, *sketch, s.active_sketch), Some(*sketch))
                 }
-                solidcraft_engine::doc::construct::GeoRef::Edge { at, name } => {
+                solidcraft_engine::doc::construct::GeoRef::Edge { at, name, body } => {
                     // Preserve the saved named reference until a replacement is picked.
-                    d.extra.insert("path".into(), json!({"type":"edge","at":pt3(*at),"name":name}));
+                    d.extra.insert("path".into(), json!({"type":"edge","at":pt3(*at),"name":name,"body":body}));
                     (Sel::Edge { body: String::new(), index: 0, point: *at }, None)
                 }
                 _ => return None,

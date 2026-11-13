@@ -12,24 +12,24 @@ use crate::schema::{ParamCheck, input_schema_for, output_schema_for};
 
 #[test]
 fn schemas_and_the_key_check_agree() {
-    assert_keys(input_schema_for::<AxisThroughCylinderParams>(), &["face", "name", "participants"]);
-    assert_keys(input_schema_for::<AxisNormalToFaceParams>(), &["face", "name", "participants", "point"]);
-    assert_keys(input_schema_for::<AxisTwoPlanesParams>(), &["a", "b", "name", "participants"]);
-    assert_keys(input_schema_for::<AxisTwoPointsParams>(), &["a", "b", "name", "participants"]);
-    assert_keys(input_schema_for::<AxisEdgeParams>(), &["edge", "name", "participants"]);
-    assert_keys(input_schema_for::<PointVertexParams>(), &["name", "participants", "point"]);
-    assert_keys(input_schema_for::<PointTwoEdgesParams>(), &["a", "b", "name", "participants"]);
-    assert_keys(input_schema_for::<PointThreePlanesParams>(), &["a", "b", "c", "name", "participants"]);
-    assert_keys(input_schema_for::<PointCenterParams>(), &["name", "of", "participants"]);
-    assert_keys(input_schema_for::<PointEdgePlaneParams>(), &["edge", "name", "participants", "plane"]);
-    assert_keys(input_schema_for::<PointAlongPathParams>(), &["name", "participants", "path", "t"]);
-    assert_keys(input_schema_for::<MidplaneParams>(), &["a", "b", "name", "participants"]);
-    assert_keys(input_schema_for::<PlaneAxisPointParams>(), &["axis", "name", "participants", "point"]);
-    assert_keys(input_schema_for::<PlaneTwoEdgesParams>(), &["a", "b", "name", "participants"]);
-    assert_keys(input_schema_for::<PlaneThreePointsParams>(), &["a", "b", "c", "name", "participants"]);
-    assert_keys(input_schema_for::<PlaneTangentParams>(), &["angle", "at", "face", "name", "participants", "reference"]);
-    assert_keys(input_schema_for::<PlaneAlongPathParams>(), &["name", "participants", "path", "t"]);
-    assert_keys(input_schema_for::<PlanePerpendicularParams>(), &["line", "name", "participants", "plane"]);
+    assert_keys(input_schema_for::<AxisThroughCylinderParams>(), &["face", "link_frames", "name", "participants"]);
+    assert_keys(input_schema_for::<AxisNormalToFaceParams>(), &["face", "link_frames", "name", "participants", "point"]);
+    assert_keys(input_schema_for::<AxisTwoPlanesParams>(), &["a", "b", "link_frames", "name", "participants"]);
+    assert_keys(input_schema_for::<AxisTwoPointsParams>(), &["a", "b", "link_frames", "name", "participants"]);
+    assert_keys(input_schema_for::<AxisEdgeParams>(), &["edge", "link_frames", "name", "participants"]);
+    assert_keys(input_schema_for::<PointVertexParams>(), &["link_frames", "name", "participants", "point"]);
+    assert_keys(input_schema_for::<PointTwoEdgesParams>(), &["a", "b", "link_frames", "name", "participants"]);
+    assert_keys(input_schema_for::<PointThreePlanesParams>(), &["a", "b", "c", "link_frames", "name", "participants"]);
+    assert_keys(input_schema_for::<PointCenterParams>(), &["link_frames", "name", "of", "participants"]);
+    assert_keys(input_schema_for::<PointEdgePlaneParams>(), &["edge", "link_frames", "name", "participants", "plane"]);
+    assert_keys(input_schema_for::<PointAlongPathParams>(), &["link_frames", "name", "participants", "path", "t"]);
+    assert_keys(input_schema_for::<MidplaneParams>(), &["a", "b", "link_frames", "name", "participants"]);
+    assert_keys(input_schema_for::<PlaneAxisPointParams>(), &["axis", "link_frames", "name", "participants", "point"]);
+    assert_keys(input_schema_for::<PlaneTwoEdgesParams>(), &["a", "b", "link_frames", "name", "participants"]);
+    assert_keys(input_schema_for::<PlaneThreePointsParams>(), &["a", "b", "c", "link_frames", "name", "participants"]);
+    assert_keys(input_schema_for::<PlaneTangentParams>(), &["angle", "at", "face", "link_frames", "name", "participants", "reference"]);
+    assert_keys(input_schema_for::<PlaneAlongPathParams>(), &["link_frames", "name", "participants", "path", "t"]);
+    assert_keys(input_schema_for::<PlanePerpendicularParams>(), &["line", "link_frames", "name", "participants", "plane"]);
 }
 
 #[test]

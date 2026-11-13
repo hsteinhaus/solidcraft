@@ -26,17 +26,22 @@ pub enum GeoRef {
     /// The design origin.
     Origin,
     /// A body vertex: where the edges named `edges` meet (the end they share), else the one
-    /// nearest `at`.
+    /// nearest `at`; on `body` when given, as for a face.
     Vertex {
         at: Vec3,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         edges: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<String>,
     },
-    /// A body edge: the one named `name`, else the one nearest `at`.
+    /// A body edge: the one named `name`, else the one nearest `at`; on `body` when given, as
+    /// for a face.
     Edge {
         at: Vec3,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<String>,
     },
     /// A body face: the one named `name`, else the one at `at`. `body` is the body it was picked
     /// on (`Block (Part:2)`): the placements of a component share their face names, so it tells
@@ -180,9 +185,15 @@ fn face_of<'a>(st: &'a ModelState, at: Vec3, name: &Option<String>, body: &Optio
     best.map(|(_, b, fi)| (b, fi, at)).ok_or_else(|| bad(format!("no face at {at:?}")))
 }
 
-/// The edge a stored name finds, on any body. The very edge on several bodies (the placements
-/// of a component share their names): the one the reference's point lies on, as for a face.
-fn named_edge<'a>(st: &'a ModelState, name: &str, at: Vec3) -> Option<(&'a ModelBody, crate::name_lookup::EdgeHit)> {
+/// The edge a stored name finds: on `body` when that has it, else on any body. The very edge on
+/// several bodies (the placements of a component share their names): the one the reference's
+/// point lies on, as for a face.
+fn named_edge<'a>(st: &'a ModelState, name: &str, at: Vec3, body: &Option<String>) -> Option<(&'a ModelBody, crate::name_lookup::EdgeHit)> {
+    if let Some(b) = body.as_deref().and_then(|n| bodies(st).find(|b| b.name == n))
+        && let Ok(hit) = crate::name_lookup::locate_edge(b, name, at)
+    {
+        return Some((b, hit));
+    }
     let hits: Vec<_> = bodies(st).filter_map(|b| crate::name_lookup::locate_edge(b, name, at).ok().map(|hit| (b, hit))).collect();
     if let [one] = hits.as_slice() {
         return Some(*one);
@@ -195,20 +206,26 @@ fn named_edge<'a>(st: &'a ModelState, name: &str, at: Vec3) -> Option<(&'a Model
 }
 
 /// The edge picked, as a polyline.
-fn edge_points(st: &ModelState, at: Vec3, name: &Option<String>) -> Result<Vec<Vec3>> {
-    edge_pick(st, at, name).map(|(_, _, pts)| pts)
+fn edge_points(st: &ModelState, at: Vec3, name: &Option<String>, body: &Option<String>) -> Result<Vec<Vec3>> {
+    edge_pick(st, at, name, body).map(|(_, _, pts)| pts)
+}
+
+/// The bodies a pick on `body` is looked for on: that body when it is there, else all.
+fn picked_bodies<'a>(st: &'a ModelState, body: &'a Option<String>) -> impl Iterator<Item = &'a ModelBody> {
+    let only = body.as_deref().filter(|n| bodies(st).any(|b| b.name == *n));
+    bodies(st).filter(move |b| only.is_none_or(|n| b.name == n))
 }
 
 /// The edge picked: its body, its index there (as `Body::edges` lists it) and its polyline. An
 /// edge picked with a name is the edge the name finds, or the reference fails, asking for it to
 /// be picked again.
-fn edge_pick<'a>(st: &'a ModelState, at: Vec3, name: &Option<String>) -> Result<(&'a ModelBody, usize, Vec<Vec3>)> {
+fn edge_pick<'a>(st: &'a ModelState, at: Vec3, name: &Option<String>, body: &'a Option<String>) -> Result<(&'a ModelBody, usize, Vec<Vec3>)> {
     let mut at = at;
     if let Some(n) = name {
-        at = named_edge(st, n, at).map(|(_, hit)| hit.point).ok_or_else(|| DocError::reselect(n.as_str()))?;
+        at = named_edge(st, n, at, body).map(|(_, hit)| hit.point).ok_or_else(|| DocError::reselect(n.as_str()))?;
     }
     let mut best: Option<(f64, &ModelBody, usize, Vec<Vec3>)> = None;
-    for b in bodies(st) {
+    for b in picked_bodies(st, body) {
         let tol = (b.body.size() * 1e-3).max(1e-3);
         let Ok(edges) = b.body.edges(tol) else { continue };
         for (i, e) in edges.into_iter().enumerate() {
@@ -239,7 +256,7 @@ const MAX_VERTEX_EDGES: usize = 16;
 
 /// Where the edges named `names` meet: the end every one of them has, nearest `at` (two edges
 /// between the same two vertices share both). `None` when an edge is gone or they share no end.
-fn named_vertex(st: &ModelState, at: Vec3, names: &[String]) -> Option<Vec3> {
+fn named_vertex(st: &ModelState, at: Vec3, names: &[String], body: &Option<String>) -> Option<Vec3> {
     if names.len() < 2 || names.len() > MAX_VERTEX_EDGES {
         return None;
     }
@@ -250,7 +267,7 @@ fn named_vertex(st: &ModelState, at: Vec3, names: &[String]) -> Option<Vec3> {
             // on the body that has it: picked again by a point on it, a corner found the first
             // edge of any body through that corner, such as another body's edge running past
             // it, so a vertex took that edge's end (#8650).
-            named_edge(st, n, at).and_then(|(b, hit)| {
+            named_edge(st, n, at, body).and_then(|(b, hit)| {
                 let m = b.mesh();
                 let pts = m.edges.get(hit.edge)?;
                 Some([*pts.first()?, *pts.last()?])
@@ -324,12 +341,12 @@ pub(crate) fn point(ctx: &Ctx, g: &GeoRef) -> Result<Vec3> {
     match g {
         GeoRef::Point { p } => Ok(*p),
         GeoRef::Origin => Ok(Vec3::ZERO),
-        GeoRef::Vertex { at, edges } => {
-            if let Some(v) = edges.as_deref().and_then(|names| named_vertex(ctx.st, *at, names)) {
+        GeoRef::Vertex { at, edges, body } => {
+            if let Some(v) = edges.as_deref().and_then(|names| named_vertex(ctx.st, *at, names, body)) {
                 return Ok(v);
             }
             let mut best: Option<(f64, Vec3)> = None;
-            for b in bodies(ctx.st) {
+            for b in picked_bodies(ctx.st, body) {
                 let tol = (b.body.size() * 1e-3).max(1e-3);
                 let Ok(edges) = b.body.edges(tol) else { continue };
                 for v in edges.iter().flat_map(|e| [e.points.first().copied(), e.points.last().copied()]).flatten() {
@@ -361,8 +378,8 @@ pub(crate) fn point(ctx: &Ctx, g: &GeoRef) -> Result<Vec3> {
 /// circular edge along its normal, or the axis of a cylinder, cone or torus face.
 fn model_line(st: &ModelState, g: &GeoRef) -> Result<(Vec3, Vec3)> {
     match g {
-        GeoRef::Edge { at, name } => {
-            let (b, i, pts) = edge_pick(st, *at, name)?;
+        GeoRef::Edge { at, name, body } => {
+            let (b, i, pts) = edge_pick(st, *at, name, body)?;
             as_line(&pts).or_else(|| edge_circle(b, i, &pts)).ok_or_else(|| bad("the edge is neither straight nor circular"))
         }
         GeoRef::Face { at, name, body } => {
@@ -448,8 +465,8 @@ pub(crate) fn plane(ctx: &Ctx, g: &GeoRef) -> Result<Plane> {
 /// The centre of a round edge, sketch circle, sphere or torus.
 fn centre(ctx: &Ctx, g: &GeoRef) -> Result<Vec3> {
     match g {
-        GeoRef::Edge { at, name } => {
-            let pts = edge_points(ctx.st, *at, name)?;
+        GeoRef::Edge { at, name, body } => {
+            let pts = edge_points(ctx.st, *at, name, body)?;
             as_circle(&pts).map(|(c, _, _)| c).ok_or_else(|| bad("the edge is not circular"))
         }
         GeoRef::SketchCurve { sketch, curve } => {
@@ -484,8 +501,8 @@ fn path_segs(ctx: &Ctx, g: &GeoRef) -> Result<Vec<kernel::PathSeg>> {
         pts.windows(2).filter(|w| w[0].dist(w[1]) > 0.0).map(|w| kernel::PathSeg::Line { a: w[0], b: w[1] }).collect()
     };
     match g {
-        GeoRef::Edge { at, name } => {
-            let (b, i, pts) = edge_pick(ctx.st, *at, name)?;
+        GeoRef::Edge { at, name, body } => {
+            let (b, i, pts) = edge_pick(ctx.st, *at, name, body)?;
             let procedural =
                 b.body.record().edges.get(i).is_some_and(|e| matches!(e.parameters(), solidcore_record::brep::Curve::SurfaceIntersection { .. }));
             if procedural {
@@ -656,7 +673,9 @@ pub(crate) fn source_bodies(ctx: &Ctx, refs: &[&GeoRef]) -> Vec<String> {
             GeoRef::Face { at, name, body } => {
                 face_of(ctx.st, *at, name, body).map(|(b, ..)| vec![b.definition_name().to_string()]).unwrap_or_default()
             }
-            GeoRef::Edge { at, name } => edge_pick(ctx.st, *at, name).map(|(b, ..)| vec![b.definition_name().to_string()]).unwrap_or_default(),
+            GeoRef::Edge { at, name, body } => {
+                edge_pick(ctx.st, *at, name, body).map(|(b, ..)| vec![b.definition_name().to_string()]).unwrap_or_default()
+            }
             GeoRef::Vertex { .. } => {
                 point(ctx, g).ok().and_then(|p| vertex_body(ctx.st, p)).map(|b| vec![b.definition_name().to_string()]).unwrap_or_default()
             }
@@ -692,8 +711,8 @@ pub(crate) fn resolve_axis(ctx: &Ctx, d: &AxisDef) -> Result<(Vec3, Vec3)> {
         AxisDef::ThroughFace { face } => line(ctx, face),
         AxisDef::Edge { edge } => {
             let (o, dir) = line(ctx, edge)?;
-            if let GeoRef::Edge { at, name } = edge
-                && as_line(&edge_points(ctx.st, *at, name)?).is_none()
+            if let GeoRef::Edge { at, name, body } = edge
+                && as_line(&edge_points(ctx.st, *at, name, body)?).is_none()
             {
                 return Err(bad("the edge is not straight"));
             }
@@ -828,12 +847,12 @@ impl GeoRef {
     /// edge or face that is gone.
     pub fn picked_point(&self, st: &ModelState) -> Option<Vec3> {
         match self {
-            GeoRef::Edge { at, name } => {
+            GeoRef::Edge { at, name, body } => {
                 let on = match name.as_deref() {
-                    Some(n) => named_edge(st, n, *at)?.1.point,
+                    Some(n) => named_edge(st, n, *at, body)?.1.point,
                     None => *at,
                 };
-                edge_pick(st, on, &None).ok().map(|_| on)
+                edge_pick(st, on, &None, body).ok().map(|_| on)
             }
             GeoRef::Face { at, name, body } => face_of(st, *at, name, body).ok().map(|(_, _, p)| p),
             _ => None,
@@ -857,8 +876,8 @@ impl GeoRef {
             GeoRef::Face { at, name: name @ None, .. } => {
                 *name = crate::naming::face_names_at(st, &[*at]).into_iter().next().filter(|n| !n.is_empty());
             }
-            GeoRef::Edge { at, name: name @ None } => {
-                for b in bodies(st) {
+            GeoRef::Edge { at, name: name @ None, body } => {
+                for b in picked_bodies(st, body) {
                     let tol = (b.body.size() * 1e-3).max(1e-3);
                     if b.body.nearest_edge(*at, tol).ok().flatten().is_some_and(|(_, d)| d <= tol * 10.0) {
                         *name = crate::naming::edge_names_at(b, &[*at]).into_iter().next().filter(|n| !n.is_empty());
@@ -866,8 +885,8 @@ impl GeoRef {
                     }
                 }
             }
-            GeoRef::Vertex { at, edges: edges @ None } => {
-                for b in bodies(st) {
+            GeoRef::Vertex { at, edges: edges @ None, body } => {
+                for b in picked_bodies(st, body) {
                     let tol = (b.body.size() * 1e-3).max(1e-3);
                     let m = b.mesh();
                     let ends_here = |e: &Vec<Vec3>| [e.first(), e.last()].into_iter().flatten().any(|q| q.dist(*at) <= tol);

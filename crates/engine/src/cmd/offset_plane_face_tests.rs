@@ -219,3 +219,68 @@ fn a_midplane_on_a_moved_placements_faces_follows_that_placement() {
     check(&s);
     check(&Session::new(Document::from_json(&s.doc.to_json()).unwrap()));
 }
+
+/// `Block` in a part placed twice, the copy (`Block (Part:2)`) 50 mm along X; the copy's
+/// occurrence.
+fn placed_twice(s: &mut Session) -> u64 {
+    let part = run(s, "component.create", json!({"name": "Part", "grounded": false}));
+    run(s, "solid.box", json!({"length": 20, "width": 20, "height": 10, "body_name": "Block"}));
+    run(s, "component.activate", json!({"component": 0}));
+    run(s, "occurrence.copy", json!({"component": part["component"], "translate": [50, 0, 0]}));
+    let (component, first) = (part["component"].as_u64().unwrap(), part["occurrence"].as_u64().unwrap());
+    s.doc.occurrences.iter().find(|o| o.component == component && o.id != first).unwrap().id
+}
+
+/// Construction geometry `name`, without an error, here and reopened.
+fn constructed(s: &Session, name: &str) -> [ConstructGeom; 2] {
+    let reopened = Session::new(Document::from_json(&s.doc.to_json()).unwrap());
+    [s, &reopened].map(|s| {
+        let id = s.doc.find_feature(name).unwrap().id;
+        assert!(s.model.result(id).is_none_or(|r| r.error.is_none()), "{name}: {:?}", s.model.result(id));
+        s.model.state().construct.iter().find(|c| c.feature == id).unwrap().geom.clone()
+    })
+}
+
+/// A plane on faces of a placement pinned as it was made (`link_frames`) stays where it was
+/// made when the placement moves after, as Fusion keeps it; the placement's faces move.
+#[test]
+fn a_midplane_with_its_placement_pinned_stays_where_it_was_made() {
+    let mut s = Session::default();
+    let copy = placed_twice(&mut s);
+    let a = json!({"face": [60, 10, 10], "body": "Block (Part:2)"});
+    let b = json!({"face": [60, 10, 0], "body": "Block (Part:2)"});
+    let pin = json!({"Part:2": [[1, 0, 0, 50], [0, 1, 0, 0], [0, 0, 1, 0]]});
+    run(&mut s, "construct.plane.midplane", json!({"a": a, "b": b, "name": "Mid", "link_frames": pin}));
+    run(&mut s, "occurrence.move", json!({"occurrence": copy, "translate": [0, 0, 30], "capture": true}));
+    for geom in constructed(&s, "Mid") {
+        let ConstructGeom::Plane(mid) = geom else { panic!("{geom:?}") };
+        assert!((mid.origin.z - 5.0).abs() < 1e-9 && mid.origin.x > 49.0, "{mid:?}");
+    }
+}
+
+/// An axis on an edge of a further placement keeps that placement's edge when it moves: the
+/// placements share their edge names, so the body picked tells them apart.
+#[test]
+fn an_axis_on_a_moved_placements_edge_follows_that_placement() {
+    let mut s = Session::default();
+    let copy = placed_twice(&mut s);
+    run(&mut s, "construct.axis.edge", json!({"edge": {"edge": [60, 0, 10], "body": "Block (Part:2)"}, "name": "A"}));
+    run(&mut s, "occurrence.move", json!({"occurrence": copy, "translate": [0, 0, 30], "capture": true}));
+    for geom in constructed(&s, "A") {
+        let ConstructGeom::Axis { origin, dir } = geom else { panic!("{geom:?}") };
+        assert!((origin.z - 40.0).abs() < 1e-9 && origin.y.abs() < 1e-9 && (dir.x.abs() - 1.0).abs() < 1e-9, "{origin:?} {dir:?}");
+    }
+}
+
+/// A point at a vertex of a further placement keeps that placement's vertex when it moves.
+#[test]
+fn a_point_at_a_moved_placements_vertex_follows_that_placement() {
+    let mut s = Session::default();
+    let copy = placed_twice(&mut s);
+    run(&mut s, "construct.point.vertex", json!({"point": {"vertex": [70, 20, 10], "body": "Block (Part:2)"}, "name": "V"}));
+    run(&mut s, "occurrence.move", json!({"occurrence": copy, "translate": [0, 0, 30], "capture": true}));
+    for geom in constructed(&s, "V") {
+        let ConstructGeom::Point(p) = geom else { panic!("{geom:?}") };
+        assert!((p.x - 70.0).abs().max((p.y - 20.0).abs()).max((p.z - 40.0).abs()) < 1e-9, "{p:?}");
+    }
+}

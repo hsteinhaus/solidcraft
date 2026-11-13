@@ -1276,6 +1276,12 @@ pub struct ConstructionCommon {
     /// construction feature changes no body, whatever this lists.
     #[serde(default)]
     pub participants: Option<StringList>,
+    /// Frames pinned as it was made, by source component (id or name) or placement (occurrence
+    /// names or ids from the root joined by `/`): a rigid row-major matrix (as occurrence.move's
+    /// `matrix`) taking the source's coordinates into the feature's component's; its picks read
+    /// the source through it, not the placements now.
+    #[serde(default)]
+    pub link_frames: Option<std::collections::BTreeMap<String, serde_json::Value>>,
 }
 
 /// [`ConstructionCommon`] for a construction plane, whose name may not name an origin plane.
@@ -1287,6 +1293,12 @@ pub struct PlaneCommon {
     /// construction feature changes no body, whatever this lists.
     #[serde(default)]
     pub participants: Option<StringList>,
+    /// Frames pinned as it was made, by source component (id or name) or placement (occurrence
+    /// names or ids from the root joined by `/`): a rigid row-major matrix (as occurrence.move's
+    /// `matrix`) taking the source's coordinates into the feature's component's; its picks read
+    /// the source through it, not the placements now.
+    #[serde(default)]
+    pub link_frames: Option<std::collections::BTreeMap<String, serde_json::Value>>,
 }
 
 /// The keys `features::add_feature` reads for every feature command, whatever else it takes:

@@ -7837,7 +7837,12 @@ fn eval_feature(
                 // A plane of numbers alone reads no body: placing them all is the design's size.
                 None if plane_is_fixed(plane) => doc.resolve_plane_in(vals, plane, 0, Some(st))?,
                 // Picks on bodies of other (moved) components are where those bodies are shown.
-                None => doc.resolve_plane_in(vals, plane, 0, Some(&*construction_state(doc, st, f.component)?))?,
+                None => doc.resolve_plane_in(
+                    vals,
+                    plane,
+                    0,
+                    Some(&*with_pinned_link_frames(doc, st, construction_state(doc, st, f.component)?, f, &[])?),
+                )?,
             };
             st.construct.push(crate::construct::Construct {
                 feature: f.id,
@@ -7848,7 +7853,7 @@ fn eval_feature(
             Ok(())
         }
         FeatureKind::ConstructionAxis { def } => {
-            let cst = construction_state(doc, st, f.component)?;
+            let cst = with_pinned_link_frames(doc, st, construction_state(doc, st, f.component)?, f, &[])?;
             let ctx = crate::construct::Ctx { doc, vals, st: &cst, depth: 0 };
             let (origin, dir) = crate::construct::resolve_axis(&ctx, def)?;
             let bodies = crate::construct::source_bodies(&ctx, &def.refs());
@@ -7861,7 +7866,7 @@ fn eval_feature(
             Ok(())
         }
         FeatureKind::ConstructionPoint { def } => {
-            let cst = construction_state(doc, st, f.component)?;
+            let cst = with_pinned_link_frames(doc, st, construction_state(doc, st, f.component)?, f, &[])?;
             let ctx = crate::construct::Ctx { doc, vals, st: &cst, depth: 0 };
             let p = crate::construct::resolve_point(&ctx, def)?;
             let bodies = crate::construct::source_bodies(&ctx, &def.refs());
@@ -8893,7 +8898,8 @@ pub fn state_in_frame_at<'a>(doc: &Document, st: &'a ModelState, comp: u64, fram
 /// sketch pinned a frame for (`Feature::link_frames`) placed through that frame, from the model
 /// `st` itself, instead of through the placements now. Likewise each placement it pinned
 /// (`Feature::link_placement_frames`): its first placement's bodies and sketches, and the further
-/// placements' bodies `named` names (`Block (Part:2)`), added here so they are not placed again.
+/// placements' bodies (`Block (Part:2)`) that `framed` has or `named` names (added here so they
+/// are not placed again).
 fn with_pinned_link_frames<'a>(
     doc: &Document,
     st: &ModelState,
@@ -8933,7 +8939,7 @@ fn with_pinned_link_frames<'a>(
             }
         }
     }
-    if f.link_placement_frames.is_empty() || named.is_empty() {
+    if f.link_placement_frames.is_empty() {
         return Ok(std::borrow::Cow::Owned(out));
     }
     let owners = doc.model_body_components(st);
@@ -8945,14 +8951,18 @@ fn with_pinned_link_frames<'a>(
         let Some(m) = pinned_placement(doc, f, comp, &path) else { continue };
         for (b, _) in st.bodies.iter().zip(&owners).filter(|(_, owner)| **owner == comp) {
             let name = world.name(&b.name, comp, &path);
-            if !named.contains(&name.as_str()) || out.bodies.iter().any(|p| p.name == name) {
+            let slot = out.bodies.iter().position(|p| p.name == name);
+            if slot.is_none() && !named.contains(&name.as_str()) {
                 continue;
             }
             let bm = doc.model_body_offset(b).map_or(m, |offset| crate::mat_mul(&m, offset));
             let mut copy = st.body_in_frame(b, &bm).map_err(|e| DocError::Invalid(format!("body `{name}` cannot be moved into the frame: {e}")))?;
             copy.name = name;
             copy.source_name = Some(b.definition_name().to_string());
-            out.bodies.push(copy);
+            match slot.and_then(|i| out.bodies.get_mut(i)) {
+                Some(slot) => *slot = copy,
+                None => out.bodies.push(copy),
+            }
         }
     }
     Ok(std::borrow::Cow::Owned(out))

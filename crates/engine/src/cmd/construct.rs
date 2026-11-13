@@ -265,8 +265,8 @@ pub(super) fn geo(s: &Session, v: Option<&Value>, cmd: &str, what: &str) -> Resu
             },
             None => GeoRef::Face { at, name: None, body: None },
         },
-        Ok(GeoForm::Edge(at)) => GeoRef::Edge { at, name: None },
-        Ok(GeoForm::Vertex(at)) => GeoRef::Vertex { at, edges: None },
+        Ok(GeoForm::Edge(at)) => GeoRef::Edge { at, name: None, body: picked_body(&st, v, cmd, what)? },
+        Ok(GeoForm::Vertex(at)) => GeoRef::Vertex { at, edges: None, body: picked_body(&st, v, cmd, what)? },
         Ok(GeoForm::Sketch { sketch, part }) => {
             let sketch = sketch_id(s, Some(sketch), cmd, what)?;
             match part {
@@ -296,6 +296,14 @@ pub(super) fn geo(s: &Session, v: Option<&Value>, cmd: &str, what: &str) -> Resu
     };
     g.name_picks(&st);
     Ok(g)
+}
+
+/// The body an edge or vertex pick names (`body`), which must exist.
+fn picked_body(st: &solidcraft_doc::ModelState, v: &Value, cmd: &str, what: &str) -> Result<Option<String>> {
+    match str_(v, "body") {
+        Some(body) if st.body(body).is_none() => Err(bad(cmd, format!("`{what}`: no body `{body}`"))),
+        body => Ok(body.map(str::to_string)),
+    }
 }
 
 /// The name of the face of body `body` at `at`.
