@@ -1761,6 +1761,42 @@ fn a_turret_on_a_floating_pedestal_says_it_moves_nothing() {
     assert_eq!(run(&mut s, "joint.list", json!({}))["floating"], json!([]));
 }
 
+/// Two parts joined only to each other, beside a grounded chain (Rahmenrohr's Huelse and
+/// Reglerhalter): their group is solved from its first joint's A side, which stays put, and a
+/// motion link from the grounded chain turns a joint in it.
+#[test]
+fn a_group_joined_to_nothing_grounded_is_solved() {
+    let mut s = Session::default();
+    for (name, corner) in
+        [("G", [0.0, 0.0, 0.0]), ("A", [10.0, 0.0, 0.0]), ("B", [50.0, 0.0, 0.0]), ("C", [80.0, 30.0, 0.0]), ("D", [52.0, 0.0, 0.0])]
+    {
+        part(&mut s, name, corner);
+    }
+    let g = occ(&s, "G");
+    run(&mut s, "occurrence.ground", json!({"occurrence": g, "grounded": true}));
+    pin(&mut s, "revolute", "Hinge", "G", "A", Vec3::new(10.0, 1.0, 1.0), Vec3::Y);
+    let at = |o: &str, p: [f64; 3]| json!({"occurrence": o, "point": p, "z": [0, 0, 1], "x": [1, 0, 0]});
+    let r = run(
+        &mut s,
+        "joint.create",
+        json!({"type": "rigid", "a": at("B", [51.0, 1.0, 2.0]), "b": at("C", [81.0, 31.0, 0.0]), "flip": true, "offset": 5, "name": "Mount"}),
+    );
+    assert_eq!(r["conflicts"].as_array().map(Vec::len), Some(0), "{r}");
+    assert!(near(place(&s, "B", Vec3::new(50.0, 0.0, 0.0)), Vec3::new(50.0, 0.0, 0.0)), "B is the group's anchor");
+    let c = place(&s, "C", Vec3::new(80.0, 30.0, 0.0));
+    assert!(near(c, Vec3::new(50.0, 0.0, 7.0)), "C stands on B, 5 up: {c:?}");
+    // Still listed as joined to nothing grounded.
+    let l = run(&mut s, "joint.list", json!({}));
+    assert_eq!(l["floating"], json!([{"occurrences": ["B:1", "C:1"], "joints": ["Mount"]}]), "{l}");
+    // A joint in the group follows one in the grounded chain.
+    pin(&mut s, "revolute", "Spin", "B", "D", Vec3::new(52.0, 1.0, 1.0), Vec3::Z);
+    run(&mut s, "joint.motion_link", json!({"a": "Hinge", "b": "Spin", "ratio": 1}));
+    let r = run(&mut s, "joint.drive", json!({"joint": "Hinge", "value": 90}));
+    assert!(r["moved"] == true && r.get("reason").is_none(), "{r}");
+    let d = place(&s, "D", Vec3::new(54.0, 1.0, 1.0));
+    assert!((d.dist(Vec3::new(52.0, 1.0, 1.0)) - 2.0).abs() < 1e-6 && (d.x - 52.0).abs() < 1e-6, "D turned a quarter about Spin: {d:?}");
+}
+
 /// `quiet: true` leaves the per-occurrence lists out of joint answers, and `moved` says whether
 /// a drive moved anything: driving a joint to where it is moves nothing, with no reason given.
 #[test]
