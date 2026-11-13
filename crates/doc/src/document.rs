@@ -895,6 +895,10 @@ pub enum FeatureKind {
         /// Copy these bodies (as new bodies) instead of replaying features.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         bodies: Vec<BodyName>,
+        /// Place these placements again instead (a component pattern): the pattern owns the
+        /// placements it makes.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        placements: Vec<PlacementPattern>,
     },
     /// Mirror copies of other features' results in a plane. The copied features are named by
     /// id (#1134).
@@ -2503,6 +2507,28 @@ pub struct HoleReference {
     pub edge: Position,
     #[walk(length = "Reference distance")]
     pub distance: Expr,
+}
+
+/// The placements a component pattern makes from one source placement.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlacementPattern {
+    /// The occurrence patterned (a component's first placement, or the placement picked).
+    pub source: u64,
+    /// The placements made so far, by place in the pattern.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instances: Vec<PatternInstance>,
+}
+
+/// One placement a [`PlacementPattern`] made. It is placed where the pattern puts it as long as
+/// it is still where the pattern last placed it (`placed`); one a joint or a move put elsewhere
+/// stays there. An instance whose occurrence was deleted is not made again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PatternInstance {
+    /// Its place: (i, j) of a rectangular pattern, (i, 0) of a circular one; (0, 0) is the source.
+    pub key: [u32; 2],
+    pub occurrence: u64,
+    /// Where the pattern last placed it (its occurrence's transform then).
+    pub placed: crate::Mat,
 }
 
 /// Pattern layouts.

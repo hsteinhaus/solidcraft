@@ -1560,6 +1560,7 @@ mod tests {
         let feature = FeatureKind::Pattern {
             features: Vec::new(),
             bodies: Vec::new(),
+            placements: Vec::new(),
             pattern: PatternKind::Path {
                 path_sketch: solidcraft_engine::doc::SketchId(0),
                 path: Vec::new(),

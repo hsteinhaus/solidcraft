@@ -2639,6 +2639,11 @@ fn build<'a>(doc: &'a Document, st: &ModelState, vals: &Values, sol: &mut Soluti
             sol.errors.push((j.id, j.name.clone(), e.to_string()));
             continue;
         }
+        // A side whose placement is gone (a component pattern's count went down) holds nothing.
+        if let Some(Err(e)) = [&j.a, &j.b].into_iter().map(|o| component_of(doc, o.occurrence)).find(Result::is_err) {
+            sol.errors.push((j.id, j.name.clone(), format!("{e} is gone; pick its side again")));
+            continue;
+        }
         match (resolve(&j.a), resolve(&j.b)) {
             (Ok(fa), Ok(fb)) => {
                 frames.insert(j.id, JointFrames::new(fa, fb));

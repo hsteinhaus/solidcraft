@@ -91,11 +91,11 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("solid.pattern.rectangular", "Rectangular Pattern", pattern_rect)
         .at("SOLID", "CREATE")
         .icon("pattern_rect")
-        .params("features: [names] | bodies: [names] | components: [names] (a component from its first placement, a placement `Part:7` from itself); dir1: [x,y,z]; count1; spacing1; dir2?, count2?, spacing2?; alignment?, alignment2?: left|center|right (default right; counts include the original); reversed?, reversed2?: bool (Flip)"),
+        .params("features: [names] | bodies: [names] | components: [names] (a component from its first placement, a placement `Part:7` from itself; the feature owns the placements it makes and follows its counts, spacings and directions; a placement a joint or move put elsewhere stays there); dir1: [x,y,z]; count1; spacing1; dir2?, count2?, spacing2?; alignment?, alignment2?: left|center|right (default right; counts include the original); reversed?, reversed2?: bool (Flip)"),
     CommandSpec::new("solid.pattern.circular", "Circular Pattern", pattern_circ)
         .at("SOLID", "CREATE")
         .icon("pattern_circ")
-        .params("features: [names] | bodies: [names] | components: [names] (a component from its first placement, a placement `Part:7` from itself); axis: X|Y|Z | construction axis name (followed when edited) | {origin, dir} (origin coordinates may be length expressions; the pattern follows them) | {edge|face: [x,y,z]} (a straight or circular edge, or a cylinder, cone or torus face: about its axis, followed as the model changes); count; angle? (default 360 deg; partial arcs include both ends); alignment?: left|center|right (default right; original stays fixed); reversed?: bool (Flip; selects the extra side for even centered counts)"),
+        .params("features: [names] | bodies: [names] | components: [names] (a component from its first placement, a placement `Part:7` from itself; the feature owns the placements it makes, as for solid.pattern.rectangular); axis: X|Y|Z | construction axis name (followed when edited) | {origin, dir} (origin coordinates may be length expressions; the pattern follows them) | {edge|face: [x,y,z]} (a straight or circular edge, or a cylinder, cone or torus face: about its axis, followed as the model changes); count; angle? (default 360 deg; partial arcs include both ends); alignment?: left|center|right (default right; original stays fixed); reversed?: bool (Flip; selects the extra side for even centered counts)"),
     CommandSpec::new("solid.pattern.path", "Pattern on Path", pattern_path)
         .at("SOLID", "CREATE")
         .icon("pattern_path")
@@ -2255,7 +2255,8 @@ pub(crate) fn axis_line_object(o: &Value) -> std::result::Result<(Vec3, Vec3), &
     Ok((origin, dir))
 }
 
-/// A pattern feature, or for `components`, new occurrences of them at each placement.
+/// A pattern feature; for `components`, one that places them again at each place and owns those
+/// placements (`placement_pattern`).
 fn finish_pattern(
     s: &mut Session,
     p: &Value,
@@ -2265,23 +2266,38 @@ fn finish_pattern(
 ) -> Result<Value> {
     let comps = string_list(UNKNOWN_COMMAND, p, "components")?;
     if comps.is_empty() {
-        return add_feature(s, p, FeatureKind::Pattern { features, pattern, bodies: bodies.into_iter().map(BodyName).collect() });
+        return add_feature(
+            s,
+            p,
+            FeatureKind::Pattern { features, pattern, bodies: bodies.into_iter().map(BodyName).collect(), placements: Vec::new() },
+        );
     }
     let cmd = "pattern (components)";
-    let mats = solidcraft_doc::pattern_matrices(&s.doc, &s.model.state(), &pattern)?;
-    let mut made = Vec::new();
+    let mut placements: Vec<solidcraft_doc::PlacementPattern> = Vec::new();
     for c in &comps {
         // A component is patterned from its first placement; a placement (`Part:7`) from itself.
         let src = match s.doc.find_component(c).filter(|id| *id != 0) {
-            Some(id) => s.doc.occurrence_of(id).cloned().ok_or_else(|| bad(cmd, format!("component `{c}` has no occurrence")))?,
-            None => s.doc.occurrences.iter().find(|o| o.name == *c).cloned().ok_or_else(|| bad(cmd, format!("no component `{c}`")))?,
+            Some(id) => s.doc.occurrence_of(id).map(|o| o.id).ok_or_else(|| bad(cmd, format!("component `{c}` has no occurrence")))?,
+            None => s.doc.occurrences.iter().find(|o| o.name == *c).map(|o| o.id).ok_or_else(|| bad(cmd, format!("no component `{c}`")))?,
         };
-        let id = src.component;
-        for m in &mats {
-            made.push(s.doc_mut().add_occurrence(id, src.parent, solidcraft_doc::mat_mul(m, &src.transform))?);
+        if !placements.iter().any(|pp| pp.source == src) {
+            placements.push(solidcraft_doc::PlacementPattern { source: src, instances: Vec::new() });
         }
     }
-    Ok(json!({"occurrences": made}))
+    // Its directions and axis are in the world, as the placements are moved; the session makes
+    // the placements as it evaluates the feature.
+    let mut out = add_feature_in(s, p, FeatureKind::Pattern { features, pattern, bodies: Vec::new(), placements }, false)?;
+    let made: Vec<u64> = out
+        .get("feature")
+        .and_then(Value::as_u64)
+        .and_then(|id| s.doc.feature(id))
+        .map(|f| match &f.kind {
+            FeatureKind::Pattern { placements, .. } => placements.iter().flat_map(|pp| pp.instances.iter().map(|x| x.occurrence)).collect(),
+            _ => Vec::new(),
+        })
+        .unwrap_or_default();
+    out["occurrences"] = json!(made);
+    Ok(out)
 }
 
 /// What a pattern copies: features (replayed), bodies (`bodies: [names]`), or components

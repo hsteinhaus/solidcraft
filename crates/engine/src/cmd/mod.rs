@@ -96,6 +96,7 @@ mod model_edges_tests;
 mod panels;
 mod parameter_sweep;
 mod parameters;
+pub(crate) mod placement_pattern;
 mod plastic;
 mod print_face;
 mod render;

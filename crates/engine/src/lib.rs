@@ -1299,6 +1299,11 @@ impl Session {
             }
             self.browser_stamp = self.doc.browser_stamp();
         }
+        // A component pattern's placements follow it, before the joints move them.
+        if cmd::placement_pattern::sync(self) && self.model.evaluate_shared(&self.doc) {
+            self.evaluations = self.evaluations.saturating_add(1);
+            self.prune_occurrence_state();
+        }
         // Joints follow the geometry their origins snap to.
         if !self.doc.assembly.joints.is_empty() {
             // A solve that moves parts changes what features reading where a part is placed

@@ -1256,3 +1256,93 @@ fn circular_pattern_of_a_moved_copy_adds_one_body_per_instance() {
     let far = s.world_state().unwrap().bodies.iter().map(|b| b.mesh().bounds().max.x).fold(f64::MIN, f64::max);
     assert!(far > 20.0, "the repeats follow the redefined Move: {far}");
 }
+
+/// A component pattern `P` of `Peg` along X, `n` places `d` apart, and a grounded `Ground`.
+fn peg_pattern() -> Session {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name": "n", "expression": "3", "unit": ""}));
+    run(&mut s, "parameters.add", json!({"name": "d", "expression": "20 mm"}));
+    run(&mut s, "component.create", json!({"name": "Ground"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [0, 100, 0]}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    let ground = s.doc.occurrences[0].id;
+    run(&mut s, "occurrence.ground", json!({"occurrence": ground, "grounded": true}));
+    run(&mut s, "component.create", json!({"name": "Peg", "grounded": false}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    let r = run(&mut s, "solid.pattern.rectangular", json!({"components": ["Peg"], "dir1": [1, 0, 0], "count1": "n", "spacing1": "d", "name": "P"}));
+    assert_eq!(r["occurrences"].as_array().map(Vec::len), Some(2), "{r}");
+    s
+}
+
+/// The pattern's instances: (place, occurrence, where its origin is).
+fn instances(s: &Session) -> Vec<([u32; 2], u64, [f64; 3])> {
+    let f = s.doc.find_feature("P").unwrap();
+    let solidcraft_doc::FeatureKind::Pattern { placements, .. } = &f.kind else { panic!("{:?}", f.kind) };
+    placements[0]
+        .instances
+        .iter()
+        .map(|x| {
+            let o = s.doc.occurrences.iter().find(|o| o.id == x.occurrence).unwrap_or_else(|| panic!("{} gone", x.occurrence));
+            let p = solidcraft_doc::apply_point(&o.transform, solidcore_record::Vec3::ZERO);
+            (x.key, x.occurrence, [p.x, p.y, p.z])
+        })
+        .collect()
+}
+
+fn xs(s: &Session) -> Vec<f64> {
+    instances(s).iter().map(|(_, _, p)| p[0]).collect()
+}
+
+/// Its count and spacing follow their parameters: instances are added and removed at the
+/// pattern's places, the kept ones keep their occurrences, and the design reopens the same.
+#[test]
+fn a_component_pattern_follows_its_parameters() {
+    let mut s = peg_pattern();
+    assert_eq!(xs(&s), [20.0, 40.0]);
+    let kept: Vec<u64> = instances(&s).iter().map(|x| x.1).collect();
+    run(&mut s, "parameters.change", json!({"name": "n", "expression": "5"}));
+    assert_eq!(xs(&s), [20.0, 40.0, 60.0, 80.0]);
+    assert_eq!(instances(&s)[..2].iter().map(|x| x.1).collect::<Vec<_>>(), kept);
+    assert_eq!(run(&mut s, "inspect.measure", json!({}))["body_count"], 6);
+    run(&mut s, "parameters.change", json!({"name": "d", "expression": "30 mm"}));
+    assert_eq!(xs(&s), [30.0, 60.0, 90.0, 120.0]);
+    run(&mut s, "parameters.change", json!({"name": "n", "expression": "2"}));
+    assert_eq!(xs(&s), [30.0]);
+    assert_eq!(instances(&s)[0].1, kept[0]);
+    assert_eq!(s.doc.occurrences.len(), 3, "the removed instances' placements are gone");
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(instances(&reopened), instances(&s));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(xs(&s), [30.0, 60.0, 90.0, 120.0]);
+    let mut reopened = reopened;
+    run(&mut reopened, "parameters.change", json!({"name": "n", "expression": "3"}));
+    assert_eq!(xs(&reopened), [30.0, 60.0]);
+}
+
+/// An instance a joint placed stays where the joint put it when the pattern is evaluated again,
+/// and keeps its joint when the count changes; one removed under a joint fails that joint.
+#[test]
+fn a_jointed_pattern_instance_keeps_its_joint() {
+    let mut s = peg_pattern();
+    let (ground, second) = (s.doc.occurrences[0].id, instances(&s)[1].1);
+    let joint =
+        json!({"type": "rigid", "a": {"occurrence": ground, "point": [0, 100, 0]}, "b": {"occurrence": second, "point": [40, 0, 0]}, "name": "Hold"});
+    run(&mut s, "joint.create", joint);
+    let held = instances(&s)[1].2;
+    assert!(held[1] > 50.0, "the joint moved it: {held:?}");
+    run(&mut s, "parameters.change", json!({"name": "d", "expression": "25 mm"}));
+    assert_eq!(instances(&s)[0].2[0], 25.0);
+    assert_eq!(instances(&s)[1].2, held, "not snapped back");
+    run(&mut s, "parameters.change", json!({"name": "n", "expression": "4"}));
+    assert_eq!(instances(&s)[1].1, second);
+    assert_eq!(instances(&s)[1].2, held);
+    let list = run(&mut s, "joint.list", json!({}));
+    assert_eq!(list["errors"].as_array().map(Vec::len), Some(0), "{list}");
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(instances(&reopened)[1].2, held);
+    // Down to one copy: the jointed instance is removed and its joint fails, loudly.
+    run(&mut s, "parameters.change", json!({"name": "n", "expression": "2"}));
+    let list = run(&mut s, "joint.list", json!({}));
+    assert!(list["errors"].as_array().is_some_and(|e| e.iter().any(|e| e["name"] == "Hold")), "{list}");
+}

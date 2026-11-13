@@ -6505,6 +6505,17 @@ pub fn pattern_matrices(doc: &Document, st: &ModelState, p: &crate::PatternKind)
     pattern_transforms(doc, &vals, st, 0, p)
 }
 
+/// The places of a pattern's `copies` copies, in [`pattern_matrices`]'s order: (i, j) of a
+/// rectangular pattern, (i, 0) of the others; (0, 0), the original, is not a copy.
+pub fn pattern_keys(doc: &Document, p: &crate::PatternKind, copies: usize) -> Result<Vec<[u32; 2]>> {
+    let n2 = match p {
+        crate::PatternKind::Rectangular { dir2: Some(_), count2: Some(c), spacing2: Some(_), .. } => expr::eval_count(c, &doc.param_values().0)?,
+        _ => 1.0,
+    };
+    let n2 = (n2.max(1.0) as usize).min(MAX_INSTANCES);
+    Ok((1..=copies).map(|k| [(k / n2) as u32, (k % n2) as u32]).collect())
+}
+
 fn pattern_transforms(doc: &Document, vals: &BTreeMap<String, Value>, st: &ModelState, component: u64, p: &crate::PatternKind) -> Result<Vec<Mat>> {
     let count = |e: &str| -> Result<usize> {
         let n = expr::eval_count(e, vals)?;
@@ -6821,7 +6832,7 @@ fn source_label(doc: &Document, id: FeatureId) -> String {
 /// or mirror of bodies (its copies are bodies, which a pattern or mirror of features can't take).
 fn copied_features(doc: &Document, vals: &BTreeMap<String, Value>, st: &ModelState, src: &Feature) -> Result<Option<(Vec<FeatureId>, Vec<Mat>)>> {
     match &src.kind {
-        FeatureKind::Pattern { features, pattern, bodies } if bodies.is_empty() => {
+        FeatureKind::Pattern { features, pattern, bodies, placements } if bodies.is_empty() && placements.is_empty() => {
             Ok(Some((features.clone(), pattern_transforms(doc, vals, st, src.component, pattern)?)))
         }
         FeatureKind::Mirror { features, plane, bodies, .. } if bodies.is_empty() => {
@@ -8072,7 +8083,16 @@ fn eval_feature(
             }
             Ok(())
         }
-        FeatureKind::Pattern { features, pattern, bodies } => {
+        // A component pattern places occurrences, which the session keeps in step with it
+        // (`placement_pattern::sync`): here its layout and sources are only checked.
+        FeatureKind::Pattern { pattern, placements, .. } if !placements.is_empty() => {
+            pattern_transforms(doc, vals, st, f.component, pattern)?;
+            match placements.iter().find(|p| !doc.occurrences.iter().any(|o| o.id == p.source)) {
+                Some(p) => Err(DocError::reselect(format!("patterned placement {}", p.source))),
+                None => Ok(()),
+            }
+        }
+        FeatureKind::Pattern { features, pattern, bodies, .. } => {
             let mats = pattern_transforms(doc, vals, st, f.component, pattern)?;
             if bodies.is_empty() {
                 return replay(doc, vals, f, st, features, &mats, warning);
