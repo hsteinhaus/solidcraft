@@ -653,3 +653,43 @@ fn relink_keeps_joint_definitions_and_reports_solver_diagnostics() {
     assert!(result["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.contains("joint Seat:"))));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Update Links keeps each linked body's name, a name given here too, on the body the linked design
+/// names the same, not on whatever body now comes at its place in the file: the design's bodies
+/// change order, and a name that left it is reported.
+#[test]
+fn update_links_keeps_names_on_their_bodies_when_the_design_reorders_them() {
+    let dir = folder("reorder-names");
+    let file = dir.join("pair.solidcraft");
+    let mut part = Session::default();
+    run(&mut part, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "Small", "name": "SmallBox"}));
+    run(&mut part, "solid.box", json!({"length": 20, "width": 20, "height": 20, "corner": [50, 0, 0], "body_name": "Large", "name": "LargeBox"}));
+    run(&mut part, "file.save", json!({"path": file}));
+    let mut s = Session::default();
+    run(&mut s, "component.insert_design", json!({"path": file, "name": "Pair"}));
+    run(&mut s, "body.rename", json!({"body": "Small", "name": "Tiny"}));
+    let volumes = |s: &mut Session| -> std::collections::BTreeMap<String, i64> {
+        let m = run(s, "inspect.measure", json!({}));
+        m["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| (b["name"].as_str().unwrap().to_string(), b["volume_mm3"].as_f64().unwrap().round() as i64))
+            .collect()
+    };
+    let before = volumes(&mut s);
+    assert_eq!(before, [("Large".to_string(), 8000), ("Tiny".to_string(), 1000)].into(), "{before:?}");
+    // The design builds Large first now: the file lists its bodies the other way round.
+    run(&mut part, "timeline.reorder", json!({"feature": "LargeBox", "position": 0}));
+    run(&mut part, "file.save", json!({"path": file}));
+    let out = run(&mut s, "component.update_links", json!({}));
+    assert_eq!(volumes(&mut s), before, "{out}");
+    // A body the design no longer has by that name comes in under its new name, said so.
+    run(&mut part, "body.rename", json!({"body": "Large", "name": "Huge"}));
+    run(&mut part, "file.save", json!({"path": file}));
+    let out = run(&mut s, "component.update_links", json!({}));
+    let after = volumes(&mut s);
+    assert_eq!(after, [("Huge".to_string(), 8000), ("Tiny".to_string(), 1000)].into(), "{out}");
+    assert!(out["warnings"].to_string().contains("Huge"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
