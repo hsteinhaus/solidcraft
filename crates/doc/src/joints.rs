@@ -281,6 +281,49 @@ impl Snap {
         out
     }
 
+    /// The snap with its points and directions taken through the rigid motion `m`; `None` for one
+    /// that names what `m` doesn't carry (a sketch's point, a construction axis, an origin by name).
+    pub fn mapped(&self, m: &Mat) -> Option<Snap> {
+        let p = |v: Vec3| apply_point(m, v);
+        let d = |v: Vec3| apply_vector(m, v);
+        let x = |x: &Option<XRef>| match x {
+            Some(XRef::Dir(v)) => Some(XRef::Dir(d(*v))),
+            Some(XRef::Face { face, pick }) => Some(XRef::Face { face: face.clone(), pick: pick.map(p) }),
+            None => None,
+        };
+        let axis = |r: &Option<AxisRef>| match r {
+            Some(AxisRef::Edge { edge, pick }) => Some(Some(AxisRef::Edge { edge: edge.clone(), pick: p(*pick) })),
+            Some(AxisRef::Face { face, pick }) => Some(Some(AxisRef::Face { face: face.clone(), pick: p(*pick) })),
+            Some(AxisRef::Dir(v)) => Some(Some(AxisRef::Dir(d(*v)))),
+            Some(AxisRef::Axis { .. } | AxisRef::Plane { .. }) => None,
+            None => Some(None),
+        };
+        Some(match self {
+            Snap::Frame { origin, z, x: fx } => Snap::Frame { origin: p(*origin), z: d(*z), x: fx.map(d) },
+            Snap::Point { point, z, x: px } => Snap::Point { point: p(*point), z: z.map(d), x: px.map(d) },
+            Snap::FaceCenter { pick, face, x: fx } => Snap::FaceCenter { pick: p(*pick), face: face.clone(), x: x(fx) },
+            Snap::CircleCenter { pick, face, end, x: fx } => Snap::CircleCenter { pick: p(*pick), face: face.clone(), end: end.clone(), x: x(fx) },
+            Snap::Edge { pick, edge, face, corner, axis: a } => Snap::Edge {
+                pick: p(*pick),
+                edge: edge.clone(),
+                face: face.clone(),
+                corner: corner.clone(),
+                axis: a.map(|a| match a {
+                    EdgeAxis::Along(v) => EdgeAxis::Along(d(v)),
+                    EdgeAxis::Fixed(v) => EdgeAxis::Fixed(d(v)),
+                }),
+            },
+            Snap::Rim { pick, edge, x: fx } => Snap::Rim { pick: p(*pick), edge: edge.clone(), x: x(fx) },
+            Snap::Vertex { pick, edges, z, x: fx } => Snap::Vertex { pick: p(*pick), edges: edges.clone(), z: z.map(d), x: x(fx) },
+            Snap::Axial { pick, face, at, x: fx } => Snap::Axial { pick: p(*pick), face: face.clone(), at: *at, x: x(fx) },
+            Snap::Axes { snap, z, x: ax } => Snap::Axes { snap: Box::new(snap.mapped(m)?), z: axis(z)?, x: axis(ax)? },
+            Snap::Offset { snap, x, y, z, angle, flip } => {
+                Snap::Offset { snap: Box::new(snap.mapped(m)?), x: x.clone(), y: y.clone(), z: z.clone(), angle: angle.clone(), flip: *flip }
+            }
+            Snap::SketchPoint { .. } | Snap::Linked { .. } => return None,
+        })
+    }
+
     /// [`Snap::face_names`], to rewrite them (a copied component's faces have new names).
     pub fn face_names_mut(&mut self) -> Vec<&mut String> {
         let mut out = Vec::new();
@@ -1190,7 +1233,7 @@ pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Resul
         }
         Snap::Linked { origin } => {
             let comp = component_of(doc, o.occurrence)?;
-            if let Some(l) = doc.links.get(&comp).and_then(|link| link.origins.iter().find(|l| l.name == *origin)) {
+            if let Some(l) = doc.component_link(comp).and_then(|link| link.origins.iter().find(|l| l.name == *origin)) {
                 return frame(l.origin, l.z, Some(l.x)).ok_or_else(bad);
             }
             // The design's own joint origin of that name on a placement of this component, unless

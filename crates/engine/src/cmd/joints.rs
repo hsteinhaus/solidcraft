@@ -479,6 +479,8 @@ fn origin_snap_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointO
     // A joint origin a linked design defines, by the placement and its name there.
     if let Some(name) = v.get("origin").and_then(Value::as_str) {
         let occurrence = occurrence_id(s, v.get("occurrence"), cmd)?;
+        // On a placement of a linked design, the origin moves with the part it is on there.
+        let occurrence = super::component_link::origin_occurrence(&s.doc, occurrence, name);
         let o = JointOrigin { occurrence, body: None, snap: Snap::Linked { origin: name.to_string() } };
         joints::resolve_origin(&s.doc, &s.model.state(), &o).map_err(|e| {
             let comp = component_of(s, occurrence);

@@ -2965,7 +2965,11 @@ fn a_linked_designs_joints_move_each_placement() {
     run(&mut s, "component.create", json!({"name": "Flag"}));
     run(&mut s, "solid.box", json!({"length": 2, "width": 2, "height": 8, "body_name": "Flag"}));
     run(&mut s, "component.activate", json!({"component": "root"}));
-    run(&mut s, "joint.create", json!({"type": "rigid", "a": {"occurrence": "Hinge:1", "origin": "Tip"}, "b": {"occurrence": "Flag:1", "face": [1, 1, 0]}}));
+    run(
+        &mut s,
+        "joint.create",
+        json!({"type": "rigid", "a": {"occurrence": "Hinge:1", "origin": "Tip"}, "b": {"occurrence": "Flag:1", "face": [1, 1, 0]}}),
+    );
     // A body-fixed point of each placed body, by its definition and first occurrence.
     let points = |s: &Session| -> Vec<(String, Vec3)> {
         let st = s.model.state();

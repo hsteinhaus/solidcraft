@@ -9,6 +9,7 @@
 //! when the design changes, as it would inside the design, and reports it when the face is gone.
 
 use solidcraft_geom::prelude::*;
+use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -29,6 +30,10 @@ use crate::{EngineError, Result, Session};
 
 #[path = "component_extract.rs"]
 mod extract;
+
+#[path = "component_link_motion.rs"]
+mod motion;
+pub(crate) use motion::origin_occurrence;
 
 #[cfg(test)]
 #[path = "component_relink_tests.rs"]
@@ -150,6 +155,9 @@ type Linked = (String, solidcraft_io::StepFeature, Vec<Vec<String>>, solidcraft_
 struct Carried {
     origins: Vec<LinkedOrigin>,
     sketches: Vec<LinkedSketch>,
+    /// Its moving parts and joints between them (`DesignLink::parts`, `joints`).
+    parts: Vec<solidcraft_doc::LinkedPart>,
+    joints: Vec<solidcraft_doc::LinkedJoint>,
 }
 
 #[derive(Clone)]
@@ -323,7 +331,7 @@ fn session_bodies(part: &Session, shown: &str) -> Result<Linked> {
         });
         let kind = FeatureKind::Import { file: shown.to_string(), step: std::sync::Arc::from(""), components: Vec::new(), skip: Vec::new() };
         let mut feature = solidcraft_io::StepFeature { name: name.clone(), kind, body_names: Vec::new(), warnings: Vec::new(), import };
-        let carried = Carried { origins: design_origins(part, &mut feature.warnings), sketches };
+        let carried = Carried { origins: design_origins(part, &BTreeMap::new(), &mut feature.warnings), sketches, ..Default::default() };
         return Ok((name, feature, Vec::new(), part.doc.metadata.clone(), Vec::new(), carried));
     }
     let step = solidcraft_io::export(&part.doc.painted_for_link(&world), &solids, solidcraft_io::Format::Step, &name)
@@ -335,7 +343,7 @@ fn session_bodies(part: &Session, shown: &str) -> Result<Linked> {
     // The STEP text keeps no face names: carry the design's own, so references into the linked
     // bodies follow them as they do inside the design (#3330).
     let faces = solidcraft_doc::naming::carried_face_names(&world, &feature.import.bodies);
-    let properties = feature
+    let (sources, properties): (Vec<String>, Vec<SourceProperties>) = feature
         .import
         .bodies
         .iter()
@@ -379,10 +387,13 @@ fn session_bodies(part: &Session, shown: &str) -> Result<Linked> {
                 .filter_map(|(index, look)| names.get(index).map(|name| (name.clone(), look)))
                 .collect();
             let faces = carried.iter().enumerate().filter_map(|(index, name)| authored.get(name).map(|look| (index, look.clone()))).collect();
-            Ok(SourceProperties { material, definition, appearance, faces })
+            Ok((source.name.clone(), SourceProperties { material, definition, appearance, faces }))
         })
-        .collect::<Result<Vec<_>>>()?;
-    let carried = Carried { origins: design_origins(part, &mut feature.warnings), sketches };
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .unzip();
+    let (parts, joints, by_occ) = motion::design_motion(part, &sources, &mut feature.warnings);
+    let carried = Carried { origins: design_origins(part, &by_occ, &mut feature.warnings), sketches, parts, joints };
     Ok((name, feature, faces, part.doc.metadata.clone(), properties, carried))
 }
 
@@ -401,7 +412,7 @@ fn design_sketches(part: &Session) -> Vec<LinkedSketch> {
 
 /// The joint origins `part` defines, where they are in its own frame (the frame its bodies come
 /// into the linking component in). One it can't place is left out, saying so.
-fn design_origins(part: &Session, warnings: &mut Vec<String>) -> Vec<LinkedOrigin> {
+fn design_origins(part: &Session, by_occ: &BTreeMap<u64, usize>, warnings: &mut Vec<String>) -> Vec<LinkedOrigin> {
     let st = part.model.state();
     let mut out = Vec::new();
     for o in &part.doc.assembly.origins {
@@ -423,6 +434,7 @@ fn design_origins(part: &Session, warnings: &mut Vec<String>) -> Vec<LinkedOrigi
             origin: solidcraft_doc::apply_point(&t, col(3)),
             z: solidcraft_doc::apply_vector(&t, col(2)),
             x: solidcraft_doc::apply_vector(&t, col(0)),
+            part: by_occ.get(&o.origin.occurrence).copied().unwrap_or(0),
         });
     }
     out
@@ -442,17 +454,18 @@ fn frozen(snap: &mut solidcraft_doc::joints::Snap, origins: &[LinkedOrigin]) {
     }
 }
 
-/// The link of `comp` takes the joint origins and sketches its design has now; whether they
-/// changed.
-fn follow_carried(s: &mut Session, comp: u64, carried: Carried) -> bool {
+/// The link of `comp` takes the joint origins, sketches, parts and joints its design has now;
+/// whether they changed.
+fn follow_carried(s: &mut Session, comp: u64, carried: Carried) -> Result<bool> {
+    let moved = motion::follow(s, comp, carried.parts, carried.joints)?;
     if s.doc.links.get(&comp).is_none_or(|l| l.origins == carried.origins && l.sketches == carried.sketches) {
-        return false;
+        return Ok(moved);
     }
     if let Some(link) = s.doc_mut().links.get_mut(&comp) {
         link.origins = carried.origins;
         link.sketches = carried.sketches;
     }
-    true
+    Ok(true)
 }
 
 fn material_fingerprint(doc: &Document, material: &str) -> Result<Option<String>> {
@@ -677,6 +690,7 @@ fn insert_design(s: &mut Session, p: &Value) -> Result<Value> {
             let mut transform = solidcraft_doc::IDENTITY;
             transform[3] = [translate.x, translate.y, translate.z, 1.0];
             let occurrence = s.doc_mut().add_occurrence(component, parent, transform)?;
+            motion::sync(s, component)?;
             return reply(cmd, InsertDesignResult { inserted: DesignInserted::Reused { occurrence, component }, param_warnings: Vec::new() });
         }
     }
@@ -716,6 +730,9 @@ fn insert_design(s: &mut Session, p: &Value) -> Result<Value> {
             file_sha256: Some(read),
             origins: carried.origins,
             sketches: carried.sketches,
+            parts: carried.parts,
+            joints: carried.joints,
+            placements: Vec::new(),
         },
     );
     s.refresh();
@@ -724,6 +741,7 @@ fn insert_design(s: &mut Session, p: &Value) -> Result<Value> {
     }
     inherit_properties(s, comp, &properties)?;
     s.refresh();
+    motion::sync(s, comp)?;
     let st = s.model.state();
     let bodies: Vec<String> = st.bodies.iter().filter(|b| b.feature == id).map(|b| b.name.clone()).collect();
     let inserted = DesignInserted::New {
@@ -798,7 +816,8 @@ fn update_links(s: &mut Session, p: &Value) -> Result<Value> {
             kept_faces.and_then(|faces| unchanged_read(&file, digest(bytes.as_slice()), digest(old.as_bytes()), faces))
         {
             warnings.extend(known);
-            let moved = follow_carried(s, comp, carried);
+            let moved = follow_carried(s, comp, carried)?;
+            motion::sync(s, comp)?;
             // Another component or session may have evaluated this source first. Its
             // cached geometry says nothing about this link's inherited properties.
             if inherit_properties(s, comp, &properties)? || moved {
@@ -822,10 +841,11 @@ fn update_links(s: &mut Session, p: &Value) -> Result<Value> {
             Err(e) => return Err(bad(cmd, format!("{cname}: {e}"))),
         };
         warnings.extend(sf.warnings.iter().cloned());
-        let moved = follow_carried(s, comp, carried);
+        let moved = follow_carried(s, comp, carried)?;
         let same = matches!(&sf.kind, FeatureKind::Import { step, .. } if *step == old);
         let kept = s.doc.feature(link.feature).map(|f| &f.link_faces);
         if same && kept == Some(&faces) {
+            motion::sync(s, comp)?;
             if inherit_properties(s, comp, &properties)? || moved {
                 updated.push(cname)
             } else {
@@ -855,6 +875,7 @@ fn update_links(s: &mut Session, p: &Value) -> Result<Value> {
             f.link_faces = faces;
         }
         s.refresh();
+        motion::sync(s, comp)?;
         let changed = inherit_properties(s, comp, &properties)? || changed || moved;
         if changed { updated.push(cname) } else { unchanged.push(cname) }
     }
@@ -959,7 +980,9 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
             ..link.clone()
         },
     );
+    motion::follow(s, comp, carried.parts, carried.joints)?;
     s.refresh();
+    motion::sync(s, comp)?;
     if let Some(error) = s.model.result(link.feature).and_then(|r| r.error.clone()) {
         return Err(bad(cmd, error));
     }
@@ -996,7 +1019,8 @@ fn break_link(s: &mut Session, p: &Value) -> Result<Value> {
     let comp = component_key(s, p, "component", cmd)?;
     let link = s.doc_mut().links.remove(&comp).ok_or_else(|| bad(cmd, "that component is not linked to a design"))?;
     // Joint origins of the design stay where it last had them, as its bodies do.
-    let own: Vec<u64> = s.doc.occurrences.iter().filter(|o| o.component == comp).map(|o| o.id).collect();
+    let own: Vec<u64> =
+        s.doc.occurrences.iter().filter(|o| o.component == comp || link.parts.iter().any(|p| p.component == o.component)).map(|o| o.id).collect();
     let freeze = |o: &mut solidcraft_doc::joints::JointOrigin| {
         if own.contains(&o.occurrence) {
             frozen(&mut o.snap, &link.origins);

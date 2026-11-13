@@ -3144,6 +3144,71 @@ pub struct DesignLink {
     /// through the occurrence's placement (`LinkSource::LinkedSketchPoint` and `…Curve`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sketches: Vec<LinkedSketch>,
+    /// The parts of the linked design its joints move ([`LinkedPart`]), as it last read them:
+    /// none when nothing in it moves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<LinkedPart>,
+    /// The linked design's joints between its parts, as it last read them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joints: Vec<LinkedJoint>,
+    /// Per placement of the component: the occurrences of its parts and its joints there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub placements: Vec<LinkedPlacement>,
+}
+
+/// A part of a linked design that its joints move against the rest (the base, which the linked
+/// component holds): its bodies, held by a component of their own placed beside each placement.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LinkedPart {
+    /// The name the linked design gives the part (its first occurrence's component).
+    pub name: String,
+    /// The component holding the part's bodies here (0 before it is made).
+    #[serde(default)]
+    pub component: u64,
+    /// The part's bodies, by their index among the linked bodies.
+    pub bodies: Vec<usize>,
+}
+
+/// One side of a [`LinkedJoint`]: the part (0 = the base, else `parts[part - 1]`), the linked
+/// body by index and the snap on the linked faces, in the component's frame.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LinkedEnd {
+    #[serde(default)]
+    pub part: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<usize>,
+    pub snap: crate::joints::Snap,
+}
+
+/// A joint of a linked design between two of its parts, as it has it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LinkedJoint {
+    pub name: String,
+    pub kind: crate::joints::JointKind,
+    pub a: LinkedEnd,
+    pub b: LinkedEnd,
+    /// The values the linked bodies are placed at.
+    #[serde(default)]
+    pub values: Vec<f64>,
+    #[serde(default)]
+    pub limits: Vec<Option<(f64, f64)>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flip: bool,
+    #[serde(default, skip_serializing_if = "crate::joints::SlideAxis::is_z")]
+    pub axis: crate::joints::SlideAxis,
+    #[serde(default)]
+    pub offset: f64,
+    #[serde(default)]
+    pub angle: f64,
+}
+
+/// A placement of a linked component with moving parts: the occurrences of its parts beside it
+/// (by part) and this design's joints standing for the linked design's (by linked joint).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LinkedPlacement {
+    pub occurrence: u64,
+    pub parts: Vec<u64>,
+    pub joints: Vec<u64>,
 }
 
 /// A sketch of a linked design, where that design has it: its plane and its solved geometry.
@@ -3161,6 +3226,20 @@ pub struct LinkedOrigin {
     pub origin: solidcore_record::Vec3,
     pub z: solidcore_record::Vec3,
     pub x: solidcore_record::Vec3,
+    /// The part it moves with (0 = the base; see [`LinkedEnd::part`]).
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub part: usize,
+}
+
+fn is_zero_usize(n: &usize) -> bool {
+    *n == 0
+}
+
+impl Document {
+    /// The design link `comp` holds the bodies of: its own, or the one whose moving part it is.
+    pub fn component_link(&self, comp: u64) -> Option<&DesignLink> {
+        self.links.get(&comp).or_else(|| self.links.values().find(|l| comp != 0 && l.parts.iter().any(|p| p.component == comp)))
+    }
 }
 
 impl DesignLink {

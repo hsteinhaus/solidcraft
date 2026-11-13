@@ -1107,6 +1107,12 @@ pub fn face_name_at_body(body: &ModelBody, point: Vec3) -> Option<String> {
     face_names(body).get(index).filter(|name| !name.is_empty()).cloned()
 }
 
+/// The name a face or edge the linked design names `name` has among the bodies of the Import
+/// feature `fid` that links it (an edge's faces, `|` between them, each so).
+pub fn link_face_name(fid: u64, name: &str) -> String {
+    name.split('|').map(|n| format!("F{fid}:{}", crate::lineage::link_role(fid, n, 0))).collect::<Vec<_>>().join("|")
+}
+
 /// The names the faces of `imported` have in `part`, by body, then face (empty where not known):
 /// `imported` are the bodies read back from the STEP text `part`'s solid bodies were written to
 /// (a linked design), where they stand in it. Each takes the names of the solid of `part` that
