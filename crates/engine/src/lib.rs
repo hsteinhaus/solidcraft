@@ -650,12 +650,13 @@ pub struct LiveEdit {
     pub report: solidcraft_sketch::SolveReport,
 }
 
-/// The design, active sketch, pending positions and undo history at an `edit.checkpoint`.
+/// The design, active sketch and component, pending positions and undo history at an `edit.checkpoint`.
 #[derive(Clone, Debug)]
 pub(crate) struct Checkpoint {
     pub id: u64,
     pub doc: Arc<Document>,
     pub active_sketch: Option<u64>,
+    pub active_component: u64,
     pub pending_moves: std::collections::BTreeMap<u64, solidcraft_doc::Mat>,
     pub visibility: Visibility,
     pub undo: Vec<Snapshot>,
@@ -1852,7 +1853,7 @@ impl Session {
         v
     }
 
-    /// Remember the design, active sketch, pending positions and undo history; returns the checkpoint's id.
+    /// Remember the design, active sketch and component, pending positions and undo history; returns the checkpoint's id.
     pub fn checkpoint(&mut self) -> u64 {
         let id = self.next_checkpoint;
         self.next_checkpoint += 1;
@@ -1860,6 +1861,7 @@ impl Session {
             id,
             doc: self.doc.clone(),
             active_sketch: self.active_sketch,
+            active_component: self.active_component,
             undo: self.undo.clone(),
             pending_moves: self.pending_moves.clone(),
             visibility: self.visibility.clone(),
@@ -1890,6 +1892,7 @@ impl Session {
         };
         self.doc = c.doc;
         self.active_sketch = c.active_sketch;
+        self.active_component = c.active_component;
         self.pending_moves = c.pending_moves;
         self.visibility = c.visibility;
         self.undo = c.undo;
