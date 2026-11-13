@@ -285,10 +285,10 @@ pub(crate) fn cannot_move(s: &Session, sol: &joints::Solution, id: u64) -> Optio
     Some((format!("{name} is not connected to anything grounded (ground it, or join it to a grounded part)"), Some(name)))
 }
 
-/// Joint chains joined to nothing grounded, which the solver places none of: each chain's
-/// occurrences and joints, by name.
+/// Joint chains joined to nothing grounded, which the solver holds at their first joint's A
+/// side: each chain's occurrences and joints, by name.
 fn floating_chains(s: &Session, sol: &joints::Solution) -> Vec<Value> {
-    let placed = |o: u64| o == 0 || sol.world.contains_key(&o);
+    let placed = |o: u64| o == 0 || (sol.world.contains_key(&o) && !sol.floating.contains(&o));
     let errors: BTreeSet<u64> = sol.errors.iter().map(|e| e.0).collect();
     let mut next: BTreeMap<u64, Vec<(u64, &Joint)>> = BTreeMap::new();
     for j in s.doc.assembly.joints.iter().filter(|j| !j.suppressed && !errors.contains(&j.id)) {

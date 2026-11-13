@@ -1551,6 +1551,9 @@ pub struct Solution {
     pub dof: BTreeMap<u64, usize>,
     /// Occurrences fixed in place (grounded, or the root's).
     pub fixed: Vec<u64>,
+    /// Occurrences in joint groups joined to nothing fixed while something else is: each group
+    /// is held at its first joint's A side (also in `fixed`).
+    pub floating: BTreeSet<u64>,
 }
 
 /// Joint values by joint id.
@@ -2608,8 +2611,9 @@ struct Built<'a> {
 }
 
 /// Lay out the joint graph: the spanning tree out from the fixed occurrences (the root, grounded
-/// ones; with neither involved, the first joint's A side) and the joints left over, which close
-/// loops. Joints whose origins can't be resolved go to `sol.errors`; `sol.fixed` is set.
+/// ones; with neither involved, the first joint's A side; then each group joined to none of
+/// these, at its first joint's A side) and the joints left over, which close loops. Joints whose
+/// origins can't be resolved go to `sol.errors`; `sol.fixed` and `sol.floating` are set.
 fn build<'a>(doc: &'a Document, st: &ModelState, vals: &Values, sol: &mut Solution) -> Built<'a> {
     let asm = &doc.assembly;
     let joints: Vec<&Joint> = asm.joints.iter().filter(|j| !j.suppressed).take(MAX_JOINTS).collect();
@@ -2681,7 +2685,20 @@ fn build<'a>(doc: &'a Document, st: &ModelState, vals: &Values, sol: &mut Soluti
             at.entry(j.b.occurrence).or_default().push(j);
         }
     }
-    while let Some(occ) = queue.pop_front() {
+    let mut anchors: BTreeSet<u64> = BTreeSet::new();
+    // A group joined to nothing fixed: held, as the whole design is, at its first joint's A side.
+    let mut anchor = |placed: &mut BTreeMap<u64, Mat>, tree: &mut Tree<'_>, dof: &mut BTreeMap<u64, usize>| {
+        let j = joints
+            .iter()
+            .find(|j| tree.frames.contains_key(&j.id) && !placed.contains_key(&j.a.occurrence) && !placed.contains_key(&j.b.occurrence))?;
+        let (a, t) = (j.a.occurrence, occurrence_world(doc, j.a.occurrence));
+        placed.insert(a, t);
+        tree.fixed.insert(a, t);
+        dof.insert(a, 0);
+        anchors.insert(a);
+        Some(a)
+    };
+    while let Some(occ) = queue.pop_front().or_else(|| anchor(&mut placed, &mut tree, &mut dof)) {
         let Some(t) = placed.get(&occ).copied() else { continue };
         for j in at.get(&occ).map(Vec::as_slice).unwrap_or_default() {
             if used.contains(&j.id) || !tree.frames.contains_key(&j.id) {
@@ -2717,6 +2734,8 @@ fn build<'a>(doc: &'a Document, st: &ModelState, vals: &Values, sol: &mut Soluti
             queue.push_back(other);
         }
     }
+    sol.fixed.extend(&anchors);
+    sol.floating = placed.keys().copied().filter(|o| anchors.contains(&tree.path(*o).0)).collect();
     // Joints that close loops: the solve moves the loops' values to meet them, then checks they
     // agree.
     let closing: Vec<u64> = joints

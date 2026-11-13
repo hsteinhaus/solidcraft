@@ -302,17 +302,17 @@ fn urdf_keeps_uncaptured_moves_when_the_joint_is_broken() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// A group the solver leaves where it is (grounded A elsewhere, C and D only joined to each
-/// other) keeps an uncaptured move of C: no joint puts C back.
+/// A group joined to nothing grounded (grounded A elsewhere, C and D only joined to each other)
+/// is placed from C, held where its position is captured: C's uncaptured move is not exported.
 #[test]
-fn urdf_keeps_uncaptured_moves_the_solver_does_not_undo() {
+fn urdf_ignores_uncaptured_moves_in_a_group_joined_to_nothing_grounded() {
     let mut s = two_cubes();
     for (name, x) in [("C", 40), ("D", 60)] {
         run(&mut s, "component.activate", json!({"component": "root"}));
         run(&mut s, "component.create", json!({"name": name}));
         run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [x, 0, 0]}));
     }
-    // A and B are joined, so the solver walks from grounded A and never anchors C.
+    // A and B are joined to grounded A; C and D are anchored at C.
     joint(&mut s, "revolute", "Turn", Value::Null);
     run(&mut s, "joint.create", json!({"type": "revolute", "a": {"face": [45, 5, 10]}, "b": {"face": [65, 5, 0]}, "name": "Pair"}));
     let d = temp("pending-floating");
@@ -322,8 +322,8 @@ fn urdf_keeps_uncaptured_moves_the_solver_does_not_undo() {
     let c = occ(&s, "C");
     run(&mut s, "occurrence.move", json!({"occurrence": c, "translate": [0, 0, 30], "capture": false}));
     let r = run(&mut s, "file.export", json!({"path": path.to_string_lossy()}));
-    assert_ne!(std::fs::read_to_string(&path).unwrap(), before, "C exports where it is shown");
-    assert!(r["warnings"].as_array().unwrap().iter().all(|w| !w.as_str().unwrap_or("").contains("not captured")), "{r}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "C exports where its joints place it");
+    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap_or("").contains("not captured")), "{r}");
     let _ = std::fs::remove_dir_all(&d);
 }
 

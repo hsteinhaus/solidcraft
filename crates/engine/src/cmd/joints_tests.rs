@@ -1720,11 +1720,10 @@ fn a_link_chain_stored_backwards_drives_a_loop() {
     }
 }
 
-/// A turret on a pedestal joined to nothing grounded (Rover v7's turret): the solver places
-/// neither, so driving the turret moves nothing. The drive, a motion study and joint.list say
-/// so, naming the pedestal, instead of answering as if it worked.
+/// A turret on a pedestal joined to nothing grounded (Rover v7's turret): the solver holds the
+/// pedestal where it is and turns the turret on it; joint.list still names the pair as floating.
 #[test]
-fn a_turret_on_a_floating_pedestal_says_it_moves_nothing() {
+fn a_turret_on_a_floating_pedestal_turns_on_it() {
     let mut s = Session::default();
     for (name, corner) in [("Chassis", [0.0, 0.0, 0.0]), ("Arm", [10.0, 0.0, 0.0]), ("Pedestal", [50.0, 0.0, 0.0]), ("Turret", [50.0, 0.0, 2.0])] {
         part(&mut s, name, corner);
@@ -1736,23 +1735,25 @@ fn a_turret_on_a_floating_pedestal_says_it_moves_nothing() {
     let corner = Vec3::new(52.0, 0.0, 2.0);
     let start = place(&s, "Turret", corner);
     let r = run(&mut s, "joint.drive", json!({"joint": "Azimuth", "value": 30, "quiet": true}));
-    assert_eq!((&r["moved"], &r["unconnected"]), (&json!(false), &json!("Pedestal:1")), "{r}");
-    assert!(r["reason"].as_str().is_some_and(|w| w.starts_with("Pedestal:1 is not connected to anything grounded")), "{r}");
+    assert!(r["moved"] == true && r.get("reason").is_none() && r.get("unconnected").is_none(), "{r}");
     assert!(r.get("dof").is_none() && r.get("fixed").is_none(), "quiet: {r}");
-    // The value is set and answered in degrees, as asked; the turret stays where it was.
     assert!((r["values"][0]["value"].as_f64().unwrap_or(f64::NAN) - 30.0).abs() < 1e-9 && r["values"][0]["unit"] == "deg", "{r}");
-    assert!(near(place(&s, "Turret", corner), start));
+    assert!(!near(place(&s, "Turret", corner), start));
+    assert!(near(place(&s, "Pedestal", Vec3::new(50.0, 0.0, 0.0)), Vec3::new(50.0, 0.0, 0.0)), "the pedestal stays");
     let l = run(&mut s, "joint.list", json!({}));
     assert_eq!(l["floating"], json!([{"occurrences": ["Pedestal:1", "Turret:1"], "joints": ["Azimuth"]}]), "{l}");
-    // A study keying both joints moves the arm and says the turret can't move.
+    // A study keying both joints moves the arm and the turret.
     let keys = json!([{"joint": "Azimuth", "points": [[0, 0], [10, 90]]}, {"joint": "Shoulder", "points": [[0, 0], [10, 45]]}]);
     run(&mut s, "motion.study", json!({"name": "Scan", "steps": 10, "keys": keys}));
     let r = run(&mut s, "motion.play", json!({"study": "Scan", "step": 10, "quiet": true}));
     assert_eq!(r["moved"], true, "{r}");
-    let unmoved = r["unmoved"].as_array().cloned().unwrap_or_default();
-    assert!(unmoved.len() == 1 && unmoved[0]["name"] == "Azimuth" && unmoved[0]["reason"].as_str().is_some_and(|w| w.contains("Pedestal:1")), "{r}");
-    // Quiet: only the arm, which moved, has its pose in the answer.
-    assert_eq!(r["positions"].as_array().map(|p| p.iter().map(|x| x["occurrence"].clone()).collect::<Vec<_>>()), Some(vec![json!("Arm:1")]), "{r}");
+    assert_eq!(r["unmoved"], json!([]), "{r}");
+    // Quiet: only what moved has its pose in the answer.
+    assert_eq!(
+        r["positions"].as_array().map(|p| p.iter().map(|x| x["occurrence"].clone()).collect::<Vec<_>>()),
+        Some(vec![json!("Arm:1"), json!("Turret:1")]),
+        "{r}"
+    );
     // Fixed to the chassis, the pedestal is placed and the turret turns.
     run(&mut s, "joint.as_built", json!({"type": "rigid", "a": "Chassis", "b": "Pedestal", "name": "Mount"}));
     let r = run(&mut s, "joint.drive", json!({"joint": "Azimuth", "value": 60}));

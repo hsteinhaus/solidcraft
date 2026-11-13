@@ -1188,11 +1188,11 @@ mod tests {
         run(&mut s, "component.create", json!({"name": "Taller"}));
         run(&mut s, "solid.box", json!({"length": 40, "width": 30, "height": 13}));
         run(&mut s, "component.activate", json!({"component": 0}));
-        // Nothing is grounded, so OnCopy floats until PinHold, the first joint, goes with Plate's
-        // history: then the copy holds still and Other is placed on it
+        // Nothing is grounded: OnCopy's group is solved from the copy all along, so Other stays
+        // put when PinHold, the first joint, goes with Plate's history
         let out = run(&mut s, "component.extract", json!({"component": "Plate", "path": dir.join("plate.solidcraft")}));
         assert_eq!(out["copies"], json!([{"component": copy, "name": s.doc.components.iter().find(|c| c.id == copy).unwrap().name}]), "{out}");
-        assert!(out["warnings"].to_string().contains("the joints now place Other"), "{out}");
+        assert!(!out["warnings"].to_string().contains("the joints now place"), "{out}");
         assert_eq!(run(&mut s, "component.copies", json!({"component": plate}))["copies"], out["copies"]);
         let shapes_before = shapes(&s);
 
