@@ -203,6 +203,53 @@ fn a_sketchs_pinned_placement_frame_keeps_that_placements_projections() {
     assert!(ss.sketch.link_points(&l.id).into_iter().filter_map(|p| ss.sketch.points.get(p)).all(|p| ss.plane.to_world(p.pos).y > 14.9));
 }
 
+/// A pinned placement moved into another component (occurrence.reparent) keeps its pin: the
+/// path follows it, the frame stays (the placement stays where it is in the world), and its
+/// projection stays when it moves after. A pinned placement deleted fails the sketch.
+#[test]
+fn a_pinned_placement_moved_into_another_component_keeps_its_pin() {
+    let mut s = Session::default();
+    let part = run(&mut s, "component.create", json!({"name":"Part","grounded":false}));
+    run(&mut s, "solid.box", json!({"length":20,"width":20,"height":10,"body_name":"Block"}));
+    run(&mut s, "component.activate", json!({"component":0}));
+    run(&mut s, "occurrence.copy", json!({"component":part["component"],"translate":[50,0,0]}));
+    run(&mut s, "occurrence.copy", json!({"component":part["component"],"translate":[100,0,0]}));
+    let pc = part["component"].as_u64().unwrap();
+    let copy = s.doc.occurrences.iter().find(|o| o.component == pc && o.name == "Part:2").unwrap().id;
+    let holder = run(&mut s, "component.create", json!({"name":"Holder","grounded":false}));
+    let holder_occ = holder["occurrence"].as_u64().unwrap();
+    run(&mut s, "component.activate", json!({"component":0}));
+    run(&mut s, "occurrence.move", json!({"occurrence":holder_occ,"translate":[5,7,0],"axis":[0,0,1],"angle":"30 deg","capture":true}));
+    run(&mut s, "component.create", json!({"name":"Dst","grounded":false}));
+    let m2 = json!([[1, 0, 0, 50], [0, 1, 0, 0], [0, 0, 1, 0]]);
+    let pins = json!({"Part:2":m2,"Part:3":[[1,0,0,100],[0,1,0,0],[0,0,1,0]]});
+    let id = run(&mut s, "sketch.create", json!({"plane":"XY","offset":10,"name":"T","link_frames":pins}))["sketch"].as_u64().unwrap();
+    run(&mut s, "sketch.project", json!({"refs":[{"body":"Block (Part:2)","face":[60,10,10]}]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "component.activate", json!({"component":0}));
+    let pinned = |s: &Session| s.doc.feature(id).unwrap().link_placement_frames.iter().find(|(path, _)| path.last() == Some(&copy)).cloned().unwrap();
+    let before = pinned(&s);
+    run(&mut s, "occurrence.reparent", json!({"occurrence":copy,"parent":"Holder"}));
+    assert_eq!(pinned(&s), (vec![holder_occ, copy], before.1));
+    run(&mut s, "occurrence.move", json!({"occurrence":copy,"path":[holder_occ,copy],"translate":[0,15,0],"capture":true}));
+    let check = |s: &Session, what: &str| {
+        let state = s.model.state();
+        let ss = state.sketch(id).unwrap_or_else(|| panic!("{what}: {:?}", s.model.result(id)));
+        let l = &ss.sketch.links[0];
+        assert!(!l.lost, "{what}: {l:?}");
+        let points: Vec<_> =
+            ss.sketch.link_points(&l.id).into_iter().filter_map(|p| ss.sketch.points.get(p)).map(|p| ss.plane.to_world(p.pos)).collect();
+        assert!(!points.is_empty());
+        assert!(points.iter().all(|p| p.x > 49.9 && p.x < 70.1 && p.y > -0.1 && p.y < 20.1), "{what}: {points:?}");
+    };
+    check(&s, "reparented and moved");
+    check(&Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap()), "reopened");
+    // The other pinned placement deleted: the sketch fails, naming the lost pin.
+    run(&mut s, "selection.delete", json!({"occurrences":["Part:3"]}));
+    let error = s.model.result(id).and_then(|r| r.error.clone()).expect("a lost pin fails the sketch");
+    assert!(error.contains("pinned placement"), "{error}");
+}
+
 #[test]
 fn a_profile_without_a_body_transfer_keeps_its_live_component_frame() {
     let mut s = Session::default();

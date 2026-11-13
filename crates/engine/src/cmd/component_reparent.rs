@@ -45,9 +45,24 @@ pub(super) fn reparent(s: &mut Session, p: &Value) -> Result<Value> {
     if !solidcraft_doc::valid_transfer_matrix(&transform) {
         return Err(bad(cmd, "the move exceeds the supported rigid coordinate range"));
     }
-    drop(doc);
     let old_path: Vec<u64> = from_path.iter().copied().chain([id]).collect();
     let new_path: Vec<u64> = to_path.iter().copied().chain([id]).collect();
+    // A sketch's pin of a placement it leaves (`link_placement_frames`) pins it in its new place
+    // too: that pin, then the placements down to it, as now.
+    let leaving: Vec<(u64, solidcraft_doc::Mat)> = s
+        .doc
+        .features
+        .iter()
+        .flat_map(|f| f.link_placement_frames.iter().map(move |(path, m)| (f.id, path, m)))
+        .filter(|(_, path, _)| !path.is_empty() && path.len() < old_path.len() && old_path.starts_with(path))
+        .map(|(f, path, m)| {
+            let below = old_path[path.len()..]
+                .iter()
+                .filter_map(|x| doc.occurrences.iter().find(|o| o.id == *x).map(|o| if o.id == id { local } else { o.transform }));
+            (f, below.fold(*m, |m, t| solidcraft_doc::mat_mul(&m, &t)))
+        })
+        .collect();
+    drop(doc);
 
     // The placed bodies as named before the move: a body placed through it is named through its
     // new parent after (`Block (Holder:1/Part:2)`), and sketch links follow it there.
@@ -110,6 +125,15 @@ pub(super) fn reparent(s: &mut Session, p: &Value) -> Result<Value> {
             }
             _ => {}
         }
+        // Pinned placements keep their frames: the placement stays where it is in the world.
+        for (path, _) in &mut f.link_placement_frames {
+            rebase(path);
+        }
+        for (_, m) in leaving.iter().filter(|(g, _)| *g == f.id) {
+            f.link_placement_frames.retain(|(path, _)| *path != new_path);
+            f.link_placement_frames.push((new_path.clone(), *m));
+        }
+        f.link_placement_frames.sort_by(|a, b| a.0.cmp(&b.0));
     }
     if too_deep {
         return Err(bad(cmd, format!("moving {} would nest a face attachment more than 64 placements deep", o.name)));

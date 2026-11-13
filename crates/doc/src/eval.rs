@@ -8899,6 +8899,11 @@ fn with_pinned_link_frames<'a>(
     if f.link_frames.is_empty() && f.link_placement_frames.is_empty() {
         return Ok(framed);
     }
+    // A pinned placement no longer there fails the sketch, rather than reading the others.
+    if let Some((path, _)) = f.link_placement_frames.iter().find(|(path, _)| path.is_empty() || path_frame(doc, path).is_none()) {
+        let ids: Vec<String> = path.iter().map(u64::to_string).collect();
+        return Err(DocError::reselect(format!("pinned placement {}", ids.join("/"))));
+    }
     let mut out = framed.into_owned();
     for b in &st.bodies {
         let Some(m) = pin(doc.model_body_component(b)) else { continue };
