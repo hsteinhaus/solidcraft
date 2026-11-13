@@ -2514,6 +2514,11 @@ pub struct HoleReference {
 pub struct PlacementPattern {
     /// The occurrence patterned (a component's first placement, or the placement picked).
     pub source: u64,
+    /// Where the source stood when the pattern was made: the pattern is laid out from there, so
+    /// a joint or move of the source after it moves no other instance. `None` (older designs):
+    /// from where the source is now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<crate::Mat>,
     /// The placements made so far, by place in the pattern.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instances: Vec<PatternInstance>,

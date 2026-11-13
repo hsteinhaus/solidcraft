@@ -1346,3 +1346,23 @@ fn a_jointed_pattern_instance_keeps_its_joint() {
     let list = run(&mut s, "joint.list", json!({}));
     assert!(list["errors"].as_array().is_some_and(|e| e.iter().any(|e| e["name"] == "Hold")), "{list}");
 }
+
+/// The pattern is laid out from where its source stood when it was made: a joint that moves the
+/// source after it moves no other instance, not when the count changes, nor after reopening.
+#[test]
+fn a_component_pattern_stays_where_its_source_stood() {
+    let mut s = peg_pattern();
+    let (ground, source) = (s.doc.occurrences[0].id, s.doc.occurrences[1].id);
+    let joint =
+        json!({"type": "rigid", "a": {"occurrence": ground, "point": [0, 100, 0]}, "b": {"occurrence": source, "point": [0, 0, 0]}, "name": "Hold"});
+    run(&mut s, "joint.create", joint);
+    let moved =
+        s.doc.occurrences.iter().find(|o| o.id == source).map(|o| solidcraft_doc::apply_point(&o.transform, solidcore_record::Vec3::ZERO)).unwrap();
+    assert!(moved.y > 50.0, "the joint moved the source: {moved:?}");
+    assert_eq!(instances(&s).iter().map(|x| x.2).collect::<Vec<_>>(), [[20.0, 0.0, 0.0], [40.0, 0.0, 0.0]]);
+    run(&mut s, "parameters.change", json!({"name": "n", "expression": "4"}));
+    assert_eq!(xs(&s), [20.0, 40.0, 60.0]);
+    assert!(instances(&s).iter().all(|x| x.2[1] == 0.0), "{:?}", instances(&s));
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(instances(&reopened), instances(&s));
+}

@@ -2277,11 +2277,12 @@ fn finish_pattern(
     for c in &comps {
         // A component is patterned from its first placement; a placement (`Part:7`) from itself.
         let src = match s.doc.find_component(c).filter(|id| *id != 0) {
-            Some(id) => s.doc.occurrence_of(id).map(|o| o.id).ok_or_else(|| bad(cmd, format!("component `{c}` has no occurrence")))?,
-            None => s.doc.occurrences.iter().find(|o| o.name == *c).map(|o| o.id).ok_or_else(|| bad(cmd, format!("no component `{c}`")))?,
+            Some(id) => s.doc.occurrence_of(id).ok_or_else(|| bad(cmd, format!("component `{c}` has no occurrence")))?,
+            None => s.doc.occurrences.iter().find(|o| o.name == *c).ok_or_else(|| bad(cmd, format!("no component `{c}`")))?,
         };
-        if !placements.iter().any(|pp| pp.source == src) {
-            placements.push(solidcraft_doc::PlacementPattern { source: src, instances: Vec::new() });
+        // Laid out from where the source stands now, the pattern's own step.
+        if !placements.iter().any(|pp| pp.source == src.id) {
+            placements.push(solidcraft_doc::PlacementPattern { source: src.id, base: Some(src.transform), instances: Vec::new() });
         }
     }
     // Its directions and axis are in the world, as the placements are moved; the session makes

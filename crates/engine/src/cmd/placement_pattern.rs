@@ -4,7 +4,8 @@
 //! the joints are solved: a place the pattern no longer has loses its placement (a joint on it
 //! then fails), a new place gets one, and a placement still where the pattern last put it follows
 //! the pattern. One a joint or a move put elsewhere stays there, as in Fusion, where the joints
-//! after a pattern move its instances.
+//! after a pattern move its instances. The pattern is laid out from where its source stood when
+//! it was made (`base`), so a joint that moves the source after it drags no other instance.
 
 use solidcraft_doc::{FeatureKind, Mat, PatternInstance};
 
@@ -37,7 +38,7 @@ pub(crate) fn sync(s: &mut Session) -> bool {
         let wanted: std::collections::BTreeMap<[u32; 2], Mat> = keys.into_iter().zip(mats).collect();
         for (k, pp) in placements.iter().enumerate() {
             let Some(src) = s.doc.occurrences.iter().find(|o| o.id == pp.source) else { continue };
-            let at = |m: &Mat| solidcraft_doc::mat_mul(m, &src.transform);
+            let at = |m: &Mat| solidcraft_doc::mat_mul(m, pp.base.as_ref().unwrap_or(&src.transform));
             let mut plan = Plan { feature: i, source: k, keep: Vec::new(), make: Vec::new(), delete: Vec::new(), moved: Vec::new() };
             for inst in &pp.instances {
                 let occ = s.doc.occurrences.iter().find(|o| o.id == inst.occurrence);
