@@ -2934,6 +2934,102 @@ fn joint_origins_of_a_linked_design_are_usable_by_name() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A linked design's joints come along, as Fusion's do: the part they move gets a component of
+/// its own beside each placement of the link, joined to it by the design's joint on the linked
+/// faces, so each placement moves on its own, a part joined to the moving part's origin follows
+/// it, and a design linking that design again moves it the same way.
+#[test]
+fn a_linked_designs_joints_move_each_placement() {
+    let dir = std::env::temp_dir().join(format!("solidcraft-joints-{}-linked-motion", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (hinge, holder) = (dir.join("hinge.solidcraft"), dir.join("holder.solidcraft"));
+    let mut part = Session::default();
+    run(&mut part, "component.create", json!({"name": "Base"}));
+    run(&mut part, "solid.box", json!({"length": 20, "width": 20, "height": 10, "body_name": "Base"}));
+    run(&mut part, "component.activate", json!({"component": "root"}));
+    run(&mut part, "occurrence.ground", json!({"occurrence": "Base:1", "grounded": true}));
+    run(&mut part, "component.create", json!({"name": "Arm"}));
+    run(&mut part, "solid.box", json!({"length": 30, "width": 4, "height": 5, "body_name": "Arm"}));
+    run(&mut part, "component.activate", json!({"component": "root"}));
+    run(&mut part, "joint.origin", json!({"occurrence": "Arm:1", "face": [30, 2, 2.5], "name": "Tip"}));
+    let pivot = json!({"type": "revolute", "name": "Pivot", "a": {"occurrence": "Base:1", "face": [10, 10, 10]}, "b": {"occurrence": "Arm:1", "edge": [0, 2, 0]}});
+    run(&mut part, "joint.create", pivot);
+    run(&mut part, "file.save", json!({"path": hinge}));
+    // Two placements, a flag on the first one's arm tip.
+    let mut s = Session::default();
+    run(&mut s, "component.insert_design", json!({"path": hinge, "name": "Hinge", "translate": [100, 0, 0]}));
+    run(&mut s, "component.insert_design", json!({"path": hinge, "reuse": true, "translate": [0, 100, 0]}));
+    run(&mut s, "occurrence.ground", json!({"occurrence": "Hinge:1", "grounded": true}));
+    run(&mut s, "occurrence.ground", json!({"occurrence": "Hinge:2", "grounded": true}));
+    run(&mut s, "component.create", json!({"name": "Flag"}));
+    run(&mut s, "solid.box", json!({"length": 2, "width": 2, "height": 8, "body_name": "Flag"}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "joint.create", json!({"type": "rigid", "a": {"occurrence": "Hinge:1", "origin": "Tip"}, "b": {"occurrence": "Flag:1", "face": [1, 1, 0]}}));
+    // A body-fixed point of each placed body, by its definition and first occurrence.
+    let points = |s: &Session| -> Vec<(String, Vec3)> {
+        let st = s.model.state();
+        let mut out: Vec<(String, Vec3)> = s
+            .doc
+            .body_frames_with_source(&st)
+            .into_iter()
+            .filter_map(|(_, def, _, path, m)| {
+                let b = st.bodies.iter().find(|b| b.name == def)?;
+                let bb = b.outline_bounds();
+                let at = s.doc.occurrences.iter().find(|o| Some(&o.id) == path.first())?.name.clone();
+                Some((format!("{def}@{at}"), solidcraft_doc::apply_point(&m, (bb.min + bb.max) * 0.5)))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    };
+    let joint = |s: &Session, name: &str| s.doc.assembly.joints.iter().find(|j| j.name == name).cloned();
+    let rest = points(&s);
+    assert_eq!(rest.len(), 5, "{rest:?}");
+    let j1 = joint(&s, "Hinge:1/Pivot").unwrap_or_else(|| panic!("{:?}", s.doc.assembly.joints.iter().map(|j| &j.name).collect::<Vec<_>>()));
+    assert!(joint(&s, "Hinge:2/Pivot").is_some());
+    let axis = |s: &Session, j: &solidcraft_doc::joints::Joint| {
+        let m = s.doc.origin_world(&s.model.state(), &j.a).unwrap();
+        Vec3::new(m[3][0], m[3][1], m[3][2])
+    };
+    let c = axis(&s, &j1);
+    assert!(near(c, Vec3::new(110.0, 10.0, 10.0)), "{c:?}");
+    // A quarter turn of the first placement's pivot turns its arm and the flag about the axis
+    // there; the base and the second placement stay put.
+    run(&mut s, "joint.drive", json!({"joint": "Hinge:1/Pivot", "value": 90}));
+    let turned = points(&s);
+    let quarter = |p: Vec3| Vec3::new(c.x - (p.y - c.y), c.y + (p.x - c.x), p.z);
+    for ((name, was), (_, now)) in rest.iter().zip(&turned) {
+        let moves = name.starts_with("Arm@Hinge Arm:1") || name.starts_with("Flag");
+        let want = if moves { quarter(*was) } else { *was };
+        assert!(now.dist(want) < 1e-9, "{name}: {was:?} -> {now:?}, want {want:?}");
+        assert!(!moves || now.dist(*was) > 1.0, "{name} did not move");
+    }
+    run(&mut s, "joint.drive", json!({"joint": "Hinge:1/Pivot", "value": 0}));
+    for ((name, was), (_, now)) in rest.iter().zip(&points(&s)) {
+        assert!(now.dist(*was) < 1e-9, "{name}: {was:?} -> {now:?}");
+    }
+    // Saved and opened again, it moves the same.
+    run(&mut s, "file.save", json!({"path": holder}));
+    let mut back = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    run(&mut back, "joint.drive", json!({"joint": "Hinge:1/Pivot", "value": 90}));
+    for ((name, a), (_, b)) in turned.iter().zip(&points(&back)) {
+        assert!(a.dist(*b) < 1e-9, "{name}: {a:?} vs {b:?}");
+    }
+    // Linked again, one level up: the holder's placement turns its first arm and the flag.
+    let mut g = Session::default();
+    run(&mut g, "component.insert_design", json!({"path": holder, "name": "Holder"}));
+    run(&mut g, "occurrence.ground", json!({"occurrence": "Holder:1", "grounded": true}));
+    let names: Vec<String> = g.doc.assembly.joints.iter().map(|j| j.name.clone()).collect();
+    assert!(names.contains(&"Holder:1/Hinge:1/Pivot".to_string()) && names.contains(&"Holder:1/Hinge:2/Pivot".to_string()), "{names:?}");
+    let before = points(&g);
+    run(&mut g, "joint.drive", json!({"joint": "Holder:1/Hinge:1/Pivot", "value": 90}));
+    let after = points(&g);
+    let moved: Vec<&String> = before.iter().zip(&after).filter(|(a, b)| a.1.dist(b.1) > 1e-9).map(|(a, _)| &a.0).collect();
+    assert_eq!(moved.len(), 2, "{before:?} -> {after:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A joint origin at a key point of a round face's axis, as Fusion's start, middle and end of a
 /// cylindrical face: on the axis at the face's start or end along it, or halfway, z along the
 /// axis. It is kept by the face's name, so it follows the face when a parameter stretches it.
