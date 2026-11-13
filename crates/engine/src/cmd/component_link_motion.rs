@@ -61,15 +61,18 @@ pub(super) fn design_motion(
     // Parts, in the order the moving joints reach them from the base.
     let mut part_of: BTreeMap<u64, usize> = BTreeMap::from([(base, 0)]);
     let mut order = vec![base];
+    // The occurrence each part is reached at: the moving joint's side on it.
+    let mut reached: Vec<u64> = vec![0];
     let mut grew = true;
     while grew {
         grew = false;
         for j in joints.iter().filter(|j| moving(j.kind)) {
             let (a, b) = (find(&mut up, j.a.occurrence), find(&mut up, j.b.occurrence));
-            for (from, to) in [(a, b), (b, a)] {
+            for (from, to, at) in [(a, b, j.b.occurrence), (b, a, j.a.occurrence)] {
                 if part_of.contains_key(&from) && !part_of.contains_key(&to) {
                     part_of.insert(to, order.len());
                     order.push(to);
+                    reached.push(at);
                     grew = true;
                 }
             }
@@ -82,21 +85,25 @@ pub(super) fn design_motion(
         let r = find(up, occ);
         part_of.get(&r).copied().unwrap_or(0)
     };
-    // Each part named after its shallowest occurrence's component.
-    let depth = |occ: u64| doc.first_path(doc.occurrences.iter().find(|o| o.id == occ).map_or(0, |o| o.parent)).len();
-    let mut parts: Vec<LinkedPart> = (1..order.len()).map(|_| LinkedPart::default()).collect();
-    let mut shallowest: Vec<Option<usize>> = vec![None; parts.len()];
-    let mut by_occ = BTreeMap::new();
-    for o in &doc.occurrences {
-        let k = occurrence_part(&mut up, o.id);
-        by_occ.insert(o.id, k);
-        if let Some(slot) = k.checked_sub(1).and_then(|i| parts.get_mut(i).zip(shallowest.get_mut(i))) {
-            let d = depth(o.id);
-            if slot.1.is_none_or(|was| d < was) {
-                *slot.1 = Some(d);
-                slot.0.name = doc.components.iter().find(|c| c.id == o.component).map_or_else(|| o.name.clone(), |c| c.name.clone());
+    // Each part named after the occurrence the moving joint reaches it at, or the outermost one
+    // holding that which moves with it (a rotor plate's assembly).
+    let mut parts: Vec<LinkedPart> = Vec::new();
+    for (&at, &set) in reached.iter().zip(&order).skip(1) {
+        let mut top = doc.occurrences.iter().find(|o| o.id == at);
+        for _ in 0..solidcraft_doc::MAX_PLACEMENT_DEPTH {
+            let Some(o) = top else { break };
+            let up_one = if o.parent == 0 { None } else { doc.occurrence_of(o.parent) };
+            match up_one {
+                Some(p) if find(&mut up, p.id) == set => top = Some(p),
+                _ => break,
             }
         }
+        let name = top.map(|o| doc.components.iter().find(|c| c.id == o.component).map_or_else(|| o.name.clone(), |c| c.name.clone()));
+        parts.push(LinkedPart { name: name.unwrap_or_default(), ..Default::default() });
+    }
+    let mut by_occ = BTreeMap::new();
+    for o in &doc.occurrences {
+        by_occ.insert(o.id, occurrence_part(&mut up, o.id));
     }
     // Told apart by name, which keeps each part's component when the link is read again.
     for i in 1..parts.len() {

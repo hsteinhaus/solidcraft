@@ -2956,15 +2956,16 @@ fn a_linked_designs_joints_move_each_placement() {
     let pivot = json!({"type": "revolute", "name": "Pivot", "a": {"occurrence": "Base:1", "face": [10, 10, 10]}, "b": {"occurrence": "Arm:1", "edge": [0, 2, 0]}});
     run(&mut part, "joint.create", pivot);
     run(&mut part, "file.save", json!({"path": hinge}));
-    // Two placements, a flag on the first one's arm tip.
+    // Two placements, a flag (made first) on the first one's arm tip.
     let mut s = Session::default();
+    run(&mut s, "component.create", json!({"name": "Flag"}));
+    run(&mut s, "solid.box", json!({"length": 2, "width": 2, "height": 8, "body_name": "Flag"}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "occurrence.ground", json!({"occurrence": "Flag:1", "grounded": false}));
     run(&mut s, "component.insert_design", json!({"path": hinge, "name": "Hinge", "translate": [100, 0, 0]}));
     run(&mut s, "component.insert_design", json!({"path": hinge, "reuse": true, "translate": [0, 100, 0]}));
     run(&mut s, "occurrence.ground", json!({"occurrence": "Hinge:1", "grounded": true}));
     run(&mut s, "occurrence.ground", json!({"occurrence": "Hinge:2", "grounded": true}));
-    run(&mut s, "component.create", json!({"name": "Flag"}));
-    run(&mut s, "solid.box", json!({"length": 2, "width": 2, "height": 8, "body_name": "Flag"}));
-    run(&mut s, "component.activate", json!({"component": "root"}));
     run(
         &mut s,
         "joint.create",
@@ -3026,6 +3027,9 @@ fn a_linked_designs_joints_move_each_placement() {
     run(&mut g, "occurrence.ground", json!({"occurrence": "Holder:1", "grounded": true}));
     let names: Vec<String> = g.doc.assembly.joints.iter().map(|j| j.name.clone()).collect();
     assert!(names.contains(&"Holder:1/Hinge:1/Pivot".to_string()) && names.contains(&"Holder:1/Hinge:2/Pivot".to_string()), "{names:?}");
+    // A part is named after what its joint moves (the arm), not after what is fixed to it.
+    let parts: Vec<&str> = g.doc.components.iter().map(|c| c.name.as_str()).filter(|n| n.starts_with("Holder ")).collect();
+    assert_eq!(parts, ["Holder Hinge Arm", "Holder Hinge Arm (2)"], "{parts:?}");
     let before = points(&g);
     run(&mut g, "joint.drive", json!({"joint": "Holder:1/Hinge:1/Pivot", "value": 90}));
     let after = points(&g);
