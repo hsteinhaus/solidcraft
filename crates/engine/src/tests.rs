@@ -2290,6 +2290,25 @@ fn deleting_a_path_sketch_deletes_its_pipe() {
     assert!(s.model.results.iter().all(|r| r.error.is_none()));
 }
 
+/// Regression: a checkpoint left the active component out, so after going back the commands
+/// replayed from there made their sketches and bodies in whatever was active at the restore.
+#[test]
+fn checkpoint_restores_the_active_component() {
+    let mut s = Session::default();
+    run(&mut s, "component.create", json!({"name": "Board", "activate": true}));
+    let board = s.active_component;
+    assert_ne!(board, 0);
+    let id = run(&mut s, "edit.checkpoint", json!({}))["checkpoint"].as_u64().unwrap();
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    assert_eq!(s.active_component, 0);
+    run(&mut s, "edit.restore_checkpoint", json!({"checkpoint": id}));
+    assert_eq!(s.active_component, board);
+    run(&mut s, "solid.box", json!({"length": 10, "width": 5, "height": 1, "body_name": "Plate"}));
+    let comps = run(&mut s, "component.list", json!({}));
+    let holder = comps["components"].as_array().unwrap().iter().find(|c| c["bodies"].as_array().unwrap().iter().any(|b| b == "Plate"));
+    assert_eq!(holder.map(|c| c["name"].clone()), Some(json!("Board")), "{comps}");
+}
+
 /// Regression: batches were rolled back by undoing as many steps as the undo history grew,
 /// which is none once the history is full, leaving their sketches behind.
 #[test]
