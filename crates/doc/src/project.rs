@@ -26,6 +26,10 @@ const AXIS_HALF: f64 = 100.0;
 /// Points in one fitted chain at most (longer chains are thinned).
 const MAX_CHAIN: usize = 4000;
 
+#[cfg(test)]
+#[path = "project_edge_on_tests.rs"]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod edge_on_tests;
 #[path = "project_section.rs"]
 mod exact_section;
 #[path = "project_order.rs"]
