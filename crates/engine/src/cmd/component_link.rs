@@ -863,12 +863,11 @@ fn update_links(s: &mut Session, p: &Value) -> Result<Value> {
                 ));
             }
         }
+        if !same {
+            follow_names(s, comp, &link, &old, &sf.import, &sf.body_names, &mut warnings);
+        }
         if let Some(f) = s.doc_mut().feature_mut(link.feature) {
             if !same {
-                // Bodies keep their names where the design still has as many.
-                if f.body_names.len() != sf.body_names.len() {
-                    f.body_names = sf.body_names;
-                }
                 f.kind = sf.kind;
             }
             // A link made before the design's face names were kept gets them here.
@@ -894,6 +893,62 @@ fn update_links(s: &mut Session, p: &Value) -> Result<Value> {
         warnings.extend(sol.errors.iter().chain(&sol.conflicts).map(|(_, name, why)| format!("joint {name}: {why}")));
     }
     reply(cmd, UpdateLinksResult { updated, unchanged, warnings, failed, param_warnings: Vec::new() })
+}
+
+/// The linked bodies of `comp` take the names they had here by what the linked design names them
+/// (its body and placement, as the file it gives names them), not by their place in the file: a
+/// body it named before keeps its name here, a name given here too, and what it inherited; a body
+/// it names anew takes that name, said in `warnings`. `old` is the file it gave last.
+fn follow_names(
+    s: &mut Session,
+    comp: u64,
+    link: &DesignLink,
+    old: &str,
+    read: &solidcraft_kernel::StepImport,
+    given: &[String],
+    warnings: &mut Vec<String>,
+) {
+    let was: Vec<String> = if old.is_empty() {
+        Vec::new()
+    } else {
+        solidcraft_kernel::step_import_shared(old).map(|imp| imp.bodies.iter().map(|b| b.name.clone()).collect()).unwrap_or_default()
+    };
+    let kept = s.doc.feature(link.feature).map(|f| f.body_names.clone()).unwrap_or_default();
+    let mut used = vec![false; was.len()];
+    let (mut names, mut inherited, mut fresh) = (Vec::new(), Vec::new(), Vec::new());
+    for (j, read) in read.bodies.iter().enumerate() {
+        let k = was.iter().zip(&used).position(|(n, u)| !u && *n == read.name);
+        let name = match k {
+            Some(k) => {
+                if let Some(u) = used.get_mut(k) {
+                    *u = true;
+                }
+                inherited.push(link.inherited.get(k).cloned().unwrap_or_default());
+                kept.get(k).filter(|n| !n.trim().is_empty()).cloned().unwrap_or_else(|| read.name.clone())
+            }
+            None => {
+                if !was.is_empty() {
+                    fresh.push(read.name.clone());
+                }
+                inherited.push(link.inherited.get(j).cloned().unwrap_or_default());
+                given.get(j).cloned().unwrap_or_else(|| read.name.clone())
+            }
+        };
+        names.push(name);
+    }
+    if !fresh.is_empty() {
+        let cname = s.doc.components.iter().find(|c| c.id == comp).map(|c| c.name.clone()).unwrap_or_default();
+        warnings
+            .push(format!("{cname}: the linked design has bodies it did not have before, which come in under their own names: {}", fresh.join(", ")));
+    }
+    let keep_inherited = !link.inherited.is_empty();
+    let doc = s.doc_mut();
+    if let Some(f) = doc.feature_mut(link.feature) {
+        f.body_names = names;
+    }
+    if keep_inherited && let Some(l) = doc.links.get_mut(&comp) {
+        l.inherited = inherited;
+    }
 }
 
 /// `comp`'s linked design as it was last read (its bodies) and as its file is now, read before
@@ -963,10 +1018,10 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     {
         warnings.push("the linked geometry changed; check this component's joints, even when the solver reports no error".to_string());
     }
+    if let Some(FeatureKind::Import { step: old, .. }) = s.doc.feature(link.feature).map(|f| f.kind.clone()) {
+        follow_names(s, comp, &link, &old, &sf.import, &sf.body_names, &mut warnings);
+    }
     if let Some(f) = s.doc_mut().feature_mut(link.feature) {
-        if f.body_names.len() != sf.body_names.len() {
-            f.body_names = sf.body_names;
-        }
         f.kind = sf.kind;
         f.link_faces = faces;
     }
