@@ -4419,6 +4419,19 @@ impl Document {
             .map(|f| f.id)
             .collect();
         gone.extend(dependants);
+        // A component pattern's instances go with it (its sources stay).
+        let instances: std::collections::BTreeSet<u64> = self
+            .features
+            .iter()
+            .filter(|f| gone.contains(&f.id))
+            .filter_map(|f| match &f.kind {
+                FeatureKind::Pattern { placements, .. } => Some(placements),
+                _ => None,
+            })
+            .flatten()
+            .flat_map(|pp| pp.instances.iter().map(|i| i.occurrence))
+            .collect();
+        self.remove_occurrences(&instances);
         // How many of them come before the rollback marker: it keeps its place among the rest.
         let before_marker = self.marker.map(|m| self.features.iter().take(m).filter(|f| gone.contains(&f.id)).count());
         let gone_params: Vec<String> = self.features.iter().filter(|f| gone.contains(&f.id)).flat_map(|f| f.param_names.clone()).collect();

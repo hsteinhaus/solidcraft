@@ -1366,3 +1366,22 @@ fn a_component_pattern_stays_where_its_source_stood() {
     let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
     assert_eq!(instances(&reopened), instances(&s));
 }
+
+/// Deleting a component pattern deletes the placements it made, and the joints on them; its
+/// source stays. Undo brings them back.
+#[test]
+fn deleting_a_component_pattern_deletes_its_instances() {
+    let mut s = peg_pattern();
+    let (ground, source, second) = (s.doc.occurrences[0].id, s.doc.occurrences[1].id, instances(&s)[1].1);
+    let joint =
+        json!({"type": "rigid", "a": {"occurrence": ground, "point": [0, 100, 0]}, "b": {"occurrence": second, "point": [40, 0, 0]}, "name": "Hold"});
+    run(&mut s, "joint.create", joint);
+    let made = instances(&s);
+    run(&mut s, "timeline.delete", json!({"feature": "P"}));
+    assert_eq!(s.doc.occurrences.iter().map(|o| o.id).collect::<Vec<_>>(), [ground, source]);
+    assert!(s.doc.assembly.joints.is_empty());
+    assert_eq!(run(&mut s, "inspect.measure", json!({}))["body_count"], 2);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(instances(&s), made);
+    assert_eq!(s.doc.assembly.joints.len(), 1);
+}
