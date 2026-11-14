@@ -301,7 +301,7 @@ impl Document {
             }).collect();
             // The linked design saved again (a new payload): the face is found again by its
             // name among the faces the same feature imports.
-            if indices.is_empty() {
+            if indices.is_empty() && self.links.values().any(|link| link.feature == target.origin_feature) {
                 let names = crate::naming::face_names(body);
                 indices = body.body.face_sources().into_iter().flatten().enumerate().filter_map(|(index, source)| {
                     (matches!(source, Some(solidcraft_kernel::FaceSource::Imported { producer: Some(producer), .. }) if *producer == target.origin_feature)
