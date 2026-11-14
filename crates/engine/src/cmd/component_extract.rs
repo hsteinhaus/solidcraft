@@ -162,6 +162,12 @@ fn rename_joint_faces(s: &mut Session, old: &ModelState, import: u64, own: &BTre
             for name in o.snap.face_names_mut() {
                 rename(name, near);
             }
+            // The body it was on is gone with the copy: the linked body at the pick
+            if o.body.as_ref().is_some_and(|n| !state.bodies.iter().any(|b| &b.name == n))
+                && let Some(comp) = s.doc.occurrences.iter().find(|x| x.id == o.occurrence).map(|x| x.component)
+            {
+                o.body = solidcraft_doc::joints::bodies_at(&s.doc, &state, comp, near).into_iter().next().or(o.body.take());
+            }
         }
     };
     let mut asm = s.doc.assembly.clone();
